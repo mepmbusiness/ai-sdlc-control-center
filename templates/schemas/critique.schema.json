@@ -1,0 +1,25 @@
+{
+  "$id": "aisdlc.critique-response/v1",
+  "description": "Final response of the cross-vendor critic. Advisory only.",
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["PASS", "CONCERNS"] },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "issue": { "type": "string" },
+          "evidence": { "type": "string" },
+          "suggestion": { "type": "string" }
+        },
+        "required": ["severity", "issue", "evidence", "suggestion"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["verdict", "summary", "findings"],
+  "additionalProperties": false
+}

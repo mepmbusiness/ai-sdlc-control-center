@@ -1,0 +1,280 @@
+{
+  "schemaVersion": 1,
+  "maxConsecutiveFailures": 3,
+  "stages": [
+    {
+      "id": "idea",
+      "label": "Idea",
+      "kind": "start",
+      "owner": "human",
+      "outputs": [
+        "product/idea.md"
+      ],
+      "next": "discovery",
+      "enabled": true
+    },
+    {
+      "id": "discovery",
+      "label": "Discovery",
+      "kind": "agent",
+      "agent": "product-researcher",
+      "inputs": [
+        "product/idea.md"
+      ],
+      "outputs": [
+        "product/discovery.md"
+      ],
+      "next": "discovery-approval",
+      "enabled": true
+    },
+    {
+      "id": "discovery-approval",
+      "label": "Discovery approval",
+      "kind": "gate",
+      "reviews": "discovery",
+      "check": {
+        "agent": "product-critic"
+      },
+      "next": "product-definition",
+      "enabled": true
+    },
+    {
+      "id": "product-definition",
+      "label": "Product definition",
+      "kind": "agent",
+      "agent": "product-manager",
+      "inputs": [
+        "product/discovery.md"
+      ],
+      "outputs": [
+        "product/prd.md"
+      ],
+      "next": "prd-approval",
+      "enabled": true
+    },
+    {
+      "id": "prd-approval",
+      "label": "PRD approval",
+      "kind": "gate",
+      "reviews": "product-definition",
+      "check": {
+        "agent": "product-critic"
+      },
+      "next": "product-design",
+      "enabled": true
+    },
+    {
+      "id": "product-design",
+      "label": "Product design",
+      "kind": "agent",
+      "agent": "product-designer",
+      "inputs": [
+        "product/discovery.md",
+        "product/prd.md"
+      ],
+      "outputs": [
+        "design/design-spec.md",
+        "design/design-system.md",
+        "design/prototype/index.html"
+      ],
+      "next": "design-approval",
+      "enabled": true,
+      "timeoutMinutes": 30
+    },
+    {
+      "id": "design-approval",
+      "label": "Design approval",
+      "kind": "gate",
+      "reviews": "product-design",
+      "check": {
+        "agent": "product-critic"
+      },
+      "next": "tech-design",
+      "enabled": true
+    },
+    {
+      "id": "tech-design",
+      "label": "Tech design",
+      "kind": "agent",
+      "agent": "tech-lead",
+      "inputs": [
+        "product/prd.md",
+        "design/design-spec.md",
+        "design/design-system.md",
+        "design/prototype/index.html"
+      ],
+      "outputs": [
+        "engineering/tech-spec.md",
+        "engineering/implementation-plan.md"
+      ],
+      "next": "tech-approval",
+      "enabled": true
+    },
+    {
+      "id": "tech-approval",
+      "label": "Tech approval",
+      "kind": "gate",
+      "reviews": "tech-design",
+      "check": {
+        "agent": "product-critic"
+      },
+      "next": "implementation",
+      "enabled": true
+    },
+    {
+      "id": "implementation",
+      "label": "Implementation",
+      "kind": "agent",
+      "agent": "software-engineer",
+      "inputs": [
+        "product/prd.md",
+        "design/design-spec.md",
+        "engineering/tech-spec.md",
+        "engineering/implementation-plan.md"
+      ],
+      "outputs": [
+        "src/"
+      ],
+      "next": "code-review",
+      "enabled": false
+    },
+    {
+      "id": "code-review",
+      "label": "Code review",
+      "kind": "agent",
+      "agent": "code-reviewer",
+      "inputs": [
+        "product/prd.md",
+        "engineering/tech-spec.md",
+        "engineering/implementation-plan.md"
+      ],
+      "outputs": [
+        "engineering/code-review.md"
+      ],
+      "next": "engineering-qa",
+      "returnTo": "implementation",
+      "enabled": false
+    },
+    {
+      "id": "engineering-qa",
+      "label": "Engineering QA",
+      "kind": "agent",
+      "agent": "qa-engineer",
+      "inputs": [
+        "product/prd.md",
+        "engineering/tech-spec.md"
+      ],
+      "outputs": [
+        "engineering/qa-report.md"
+      ],
+      "next": "design-qa",
+      "returnTo": "implementation",
+      "enabled": false
+    },
+    {
+      "id": "design-qa",
+      "label": "Design QA",
+      "kind": "agent",
+      "agent": "design-qa",
+      "inputs": [
+        "design/design-spec.md",
+        "design/design-system.md",
+        "design/prototype/index.html"
+      ],
+      "outputs": [
+        "design/design-qa.md"
+      ],
+      "next": "product-review",
+      "returnTo": "implementation",
+      "enabled": false
+    },
+    {
+      "id": "product-review",
+      "label": "Product review",
+      "kind": "agent",
+      "agent": "product-reviewer",
+      "inputs": [
+        "product/discovery.md",
+        "product/prd.md",
+        "design/design-spec.md",
+        "engineering/tech-spec.md",
+        "engineering/code-review.md",
+        "engineering/qa-report.md",
+        "design/design-qa.md"
+      ],
+      "outputs": [
+        "product/product-review.md"
+      ],
+      "next": "final-approval",
+      "enabled": false
+    },
+    {
+      "id": "final-approval",
+      "label": "Final approval",
+      "kind": "gate",
+      "reviews": "product-review",
+      "next": "ship",
+      "enabled": false
+    },
+    {
+      "id": "ship",
+      "label": "Ship",
+      "kind": "end",
+      "owner": "human",
+      "enabled": false
+    }
+  ],
+  "agents": {
+    "product-researcher": {
+      "label": "Product Researcher",
+      "cli": "claude",
+      "tool": "Claude"
+    },
+    "product-critic": {
+      "label": "Product Critic",
+      "cli": "codex",
+      "tool": "Codex"
+    },
+    "product-manager": {
+      "label": "Product Manager",
+      "cli": "claude",
+      "tool": "Claude"
+    },
+    "product-designer": {
+      "label": "Product Designer",
+      "cli": "claude",
+      "tool": "Claude Code"
+    },
+    "tech-lead": {
+      "label": "Tech Lead",
+      "cli": "claude",
+      "tool": "Claude Code"
+    },
+    "software-engineer": {
+      "label": "Software Engineer",
+      "cli": "codex",
+      "tool": "Codex"
+    },
+    "code-reviewer": {
+      "label": "Code Reviewer",
+      "cli": "claude",
+      "tool": "Claude Code"
+    },
+    "qa-engineer": {
+      "label": "QA Engineer",
+      "cli": "claude",
+      "tool": "Claude Code"
+    },
+    "design-qa": {
+      "label": "Design QA",
+      "cli": "claude",
+      "tool": "Claude Code"
+    },
+    "product-reviewer": {
+      "label": "Product Reviewer",
+      "cli": "claude",
+      "tool": "Claude"
+    }
+  },
+  "version": "0.2"
+}

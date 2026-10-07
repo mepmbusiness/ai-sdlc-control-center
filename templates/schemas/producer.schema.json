@@ -1,0 +1,25 @@
+{
+  "$id": "aisdlc.producer-response/v2",
+  "description": "Final response every artifact-producing agent must return. The Control Center writes each artifact to its path, after checking the path is one of the stage's declared outputs.",
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+    "summary": { "type": "string", "description": "Two or three sentences for the human." },
+    "artifacts": {
+      "type": "array",
+      "description": "One entry per output file of the stage.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Workspace-relative path, exactly as listed in the contract outputs." },
+          "content": { "type": "string", "description": "Complete file content." }
+        },
+        "required": ["path", "content"],
+        "additionalProperties": false
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" }, "description": "Concrete, actionable blockers. Empty on PASS." }
+  },
+  "required": ["status", "summary", "artifacts", "blockers"],
+  "additionalProperties": false
+}

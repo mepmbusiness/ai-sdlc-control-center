@@ -1,0 +1,30 @@
+{
+  "$id": "aisdlc.handoff/v1",
+  "description": "Handoff record written by the Control Center after every agent run, at workflow/runs/<runId>/handoff.json. A future orchestrator only needs this file to route: PASS goes to `next`, FAIL goes to `returnTo`.",
+  "type": "object",
+  "properties": {
+    "protocol": { "const": "aisdlc.handoff/v1" },
+    "runId": { "type": "string" },
+    "stage": { "type": "string" },
+    "agent": { "type": "string" },
+    "cli": { "type": "string", "enum": ["claude", "codex"] },
+    "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+    "summary": { "type": "string" },
+    "outputs": { "type": "array", "items": { "type": "string" } },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "checks": {
+      "type": "array",
+      "description": "Deterministic checks run by the Control Center, not by the agent.",
+      "items": {
+        "type": "object",
+        "properties": { "name": { "type": "string" }, "ok": { "type": "boolean" }, "detail": { "type": "string" } },
+        "required": ["name", "ok"]
+      }
+    },
+    "next": { "type": ["string", "null"] },
+    "returnTo": { "type": ["string", "null"] },
+    "startedAt": { "type": "string" },
+    "completedAt": { "type": "string" }
+  },
+  "required": ["protocol", "runId", "stage", "agent", "cli", "status", "summary", "outputs", "blockers", "checks", "next", "returnTo", "startedAt", "completedAt"]
+}

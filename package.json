@@ -1,0 +1,19 @@
+{
+  "name": "ai-sdlc-control-center",
+  "version": "0.1.0",
+  "description": "Local control center for a human-gated, multi-agent product development workflow driven by the Claude Code and Codex CLIs.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "start": "node server/index.ts",
+    "test": "node --test tests/",
+    "upgrade-workspace": "node scripts/upgrade-workspace.ts"
+  },
+  "dependencies": {
+    "marked": "^18.1.0",
+    "yaml": "^2.9.1"
+  }
+}
