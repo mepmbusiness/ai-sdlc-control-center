@@ -4,7 +4,7 @@ A local control center for a multi-agent product development workflow, from a ra
 
 The Control Center is the **control layer**. The AI CLIs you already pay for (Claude Code and Codex) are the **execution layer**. The product's Git repository is the **source of truth**.
 
-> **Status: v0.2.** The full 16-stage workflow is defined and visible. The product half runs end to end with real models: *Idea → Discovery → PRD → Design (spec, design system, clickable HTML prototype) → Tech design*, each produced by Claude, cross-checked by Codex and approved by a human. The engineering half (implementation, reviews, QA) is defined in `templates/workflow.json` and arrives next. See [Roadmap](#roadmap).
+> **Status: v0.3.** Everything from the idea to Design QA runs with real models: *Idea → Discovery → PRD → Design → Tech design* (Claude writes, Codex cross-checks, a human approves each), then the engineering loop *Implementation (Codex) → Code review → Engineering QA → Design QA* (Claude Code checks), where any FAIL sends actionable blockers back to the engineer. Product review, the final gate and Ship arrive next. See [Roadmap](#roadmap).
 
 ---
 
@@ -166,6 +166,34 @@ Everything is readable without the UI. Restarting the server loses nothing.
 - The engine refuses decisions while any agent is running and refuses approval of anything not `APPROVAL_REQUIRED`. The HTTP API goes through the same engine, so the rules cannot be bypassed from outside the UI.
 - **Run Codex check** is optional and never blocks the gate.
 
+## The engineering loop
+
+The Software Engineer (Codex) is the only agent that can change production code, and it is checked three times by a different vendor.
+
+```mermaid
+sequenceDiagram
+  participant CC as Control Center
+  participant E as Codex (engineer)
+  participant R as Claude Code (checkers)
+  CC->>CC: snapshot code tree + protected files
+  CC->>E: plan, specs, blockers from checkers
+  E->>E: writes code in a sandbox (no network, .git read-only)
+  CC->>CC: restore any change to product/, design/, engineering/, workflow/, agents/
+  CC->>CC: run the test suite in a sandbox
+  CC->>R: diff + test results + specs
+  R-->>CC: PASS, or FAIL with actionable blockers
+  CC->>E: on FAIL, the report and blockers
+```
+
+- **Writes are sandboxed.** Codex runs with `--sandbox workspace-write`: it can write only inside the product folder, has no network and cannot touch `.git`, so it cannot commit or rewrite history.
+- **Other roles' files are protected by snapshot.** Before the run the Control Center copies `agents/`, `product/`, `design/`, `engineering/` and `workflow/`. Afterwards it restores anything the engineer changed, created or deleted there, and the run fails with the list of reverted files.
+- **Tests are run by the Control Center, not trusted from the agent.** After every engineer run, and before every check, the product's `npm test` script runs inside `codex sandbox` (writes limited to the product folder and temp, no network). Agent-written code never runs unsandboxed on your machine. An engineer cannot pass with a failing suite, and neither can a checker.
+- **Checkers cannot change code.** Code review, Engineering QA and Design QA run on Claude Code with read-only tools only. They receive the diff and the test output from the Control Center.
+- **Re-reviews see only the fix.** Code is snapshotted as Git tree objects (no commits). The first code review sees the whole implementation; after a fix, it sees only the change since its last review, plus its previous report, and checks that each blocker was resolved. Engineering QA and Design QA always see the whole implementation.
+- **Fixes always go back through review.** QA FAIL → engineer → code review (fix only) → QA. Design QA FAIL → engineer → code review → QA → Design QA.
+- **A broken checker does not bounce work.** If a checker crashes, returns a malformed report, or says FAIL without actionable blockers, the checker stage fails in place and the engineer is not called.
+- **Loops are bounded.** Three consecutive FAIL verdicts from the same checker block it until a human steps in.
+
 ## Execution safety
 
 | Rule | How it is enforced |
@@ -173,7 +201,8 @@ Everything is readable without the UI. Restarting the server loses nothing.
 | No paid API usage | Preflight requires a subscription login (`claude auth status` → `claude.ai`; `codex login status` → ChatGPT). `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and similar are stripped from the agent's environment. |
 | No auto-approved permissions | Claude runs with `--permission-mode dontAsk` and an explicit tool allowlist: anything else is denied, not approved. Codex reviewers run with `--sandbox read-only`. No `bypass` or `dangerously` flags are used (a unit test asserts this). |
 | Agents isolated from your personal setup | Claude runs with `--setting-sources project`, `--strict-mcp-config`, `--disable-slash-commands` and excludes every ancestor `CLAUDE.md`. Codex runs with `--ignore-user-config` and `--ephemeral`. |
-| One agent at a time | A single active-run lock in `state.json`, checked by the engine. |
+| One agent at a time | A single active-run lock in `state.json`, checked by the engine. Only the engineer has write access. |
+| Agent-written code | Codex writes inside a seatbelt sandbox; tests run inside `codex sandbox`; protected files are restored after every engineer run. |
 | Agents cannot write outside their artifact | Producers have read-only tools; the Control Center writes the artifact from the schema-validated response. |
 | Local only | Server binds to `127.0.0.1`, rejects foreign `Host` headers (DNS rebinding) and cross-origin or non-JSON writes (CSRF). |
 | Untrusted agent output | Rendered Markdown escapes raw HTML and only links `http(s)` and relative URLs. The HTML prototype opens in a sandboxed iframe with an opaque origin, so its scripts cannot call the Control Center API. |
@@ -222,12 +251,16 @@ It copies the current contracts, schemas and workflow definition into the produc
 npm test
 ```
 
-34 tests: engine rules (gates, rejection, routing, failure limits, restarts), CLI adapter flags (isolation and no auto-approval) and end-to-end HTTP scenarios using fake CLIs (`scripts/fake-cli.mjs`), so the suite never spends subscription quota.
+44 tests: engine rules (gates, rejection, routing, failure limits, restarts), CLI adapter flags (isolation and no auto-approval) and end-to-end HTTP scenarios using fake CLIs (`scripts/fake-cli.mjs`), so the suite never spends subscription quota.
 
 ## Known limitations
 
 - **One product at a time.** The data layout already supports more.
-- **Engineering stages are not runnable yet.** They are defined but disabled.
+- **Product review, Final approval and Ship are not runnable yet.** They are defined but disabled.
+- **No network for the engineer.** Codex cannot install packages; products should use Node.js built-ins (the Tech Lead contract steers toward this). A dependency install step with human confirmation is planned.
+- **Design QA reads code, not pixels.** It compares templates, styles and copy with the design and lists what only a human can confirm visually. Screenshot comparison needs a headless browser (Playwright), which is not installed by default.
+- **QA reasons from code and test results.** QA cannot execute its own experiments in v0.3; it judges the suite and reads the code adversarially.
+- **One engineer run implements the whole plan.** Large plans can take a long time; per-task runs are planned.
 - **Long single-shot outputs.** The designer writes three files, including a full HTML prototype, in one structured response; this takes several minutes with no intermediate progress in the live log.
 - **Subscription quotas.** No per-token cost, but every run uses your Claude or ChatGPT plan allowance. Claude owns most roles, so its quota is consumed fastest.
 - **Web research depends on Claude's web tools** being available on your plan.
@@ -249,6 +282,6 @@ npm test
 ## Roadmap
 
 - **v0.2 (done):** Product definition, Product design (design spec, design system and HTML prototype) and Tech design, each with its gate and Codex check.
-- **v0.3:** Implementation (Codex, write access in its own sandbox), Code review, Engineering QA and Design QA loops with automatic return to the engineer.
+- **v0.3 (done):** Implementation (Codex, sandboxed write access), Code review, Engineering QA and Design QA loops with automatic return to the engineer.
 - **v0.4:** Product review, final gate, ship.
 - **V2:** automatic routing from the handoff record (PASS → `next`, FAIL → `returnTo`), multiple products, alternative models per role, judge-versus-human agreement metrics, cost and quota tracking, Figma as the visual source of truth on a paid seat.

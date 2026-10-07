@@ -23,6 +23,9 @@ const STRIPPED_ENV = [
   'OPENAI_API_KEY',
   'CODEX_API_KEY',
   'CLAUDECODE',
+  // Set when the Control Center itself runs under `node --test`; inherited, it
+  // makes the product's own `node --test` report as a subtest and exit 0.
+  'NODE_TEST_CONTEXT',
 ];
 
 export function childEnv(): NodeJS.ProcessEnv {
@@ -32,7 +35,7 @@ export function childEnv(): NodeJS.ProcessEnv {
 }
 
 export function strippedKeysPresent(): string[] {
-  return STRIPPED_ENV.filter((k) => k !== 'CLAUDECODE' && process.env[k]);
+  return STRIPPED_ENV.filter((k) => !['CLAUDECODE', 'NODE_TEST_CONTEXT'].includes(k) && process.env[k]);
 }
 
 // ---------- availability and login ----------
@@ -99,6 +102,7 @@ export interface Invocation {
   lastMessagePath: string; // absolute path; codex writes its final answer here
   tools?: string[]; // claude: built-in tools made available (read-only set)
   allowedTools?: string[]; // claude: tools pre-approved in dontAsk mode
+  sandbox?: 'read-only' | 'workspace-write'; // codex: write access for the engineer only
 }
 
 // Claude Code walks up from its working directory loading CLAUDE.md files.
@@ -136,7 +140,7 @@ export function buildArgs(inv: Invocation): string[] {
   }
   return [
     'exec',
-    '--sandbox', 'read-only',
+    '--sandbox', inv.sandbox ?? 'read-only',
     '--ephemeral',
     '--ignore-user-config',
     '--skip-git-repo-check',

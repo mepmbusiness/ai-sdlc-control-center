@@ -9,9 +9,11 @@ import * as engine from './engine.ts';
 import type { Workflow, WorkflowState, StageDef } from './engine.ts';
 import * as store from './store.ts';
 import { cliStatus, spawnCli, extractClaudeResult, describeEvent, strippedKeysPresent } from './clis.ts';
+import * as wsx from './workspace.ts';
 
 const RUN_TIMEOUT_MS = { produce: 20 * 60_000, check: 10 * 60_000 };
 const children = new Map<string, ChildProcess>();
+const killers = new Map<string, () => void>(); // test runs started on behalf of a checker
 const cancelled = new Set<string>();
 
 const now = () => new Date().toISOString();
@@ -100,34 +102,61 @@ export async function preflight(ws: string, wf: Workflow, state: WorkflowState, 
 
 // ---------- prompt ----------
 
+// Markdown inputs are inlined; HTML (the prototype) is large, so agents get its
+// path and read it with their own tools when they need it.
 async function inputsSection(ws: string, files: string[]): Promise<string> {
   const parts: string[] = [];
   for (const rel of files) {
     const text = await store.readText(ws, rel);
-    parts.push(`### ${rel}\n\n${text ?? '_(missing)_'}`);
+    if (text !== null && rel.endsWith('.html')) {
+      parts.push(`### ${rel}\n\n_HTML file, ${Math.round(text.length / 1024)} KB. Read it from the repository if you need it._`);
+    } else {
+      parts.push(`### ${rel}\n\n${text ?? '_(missing)_'}`);
+    }
   }
   return parts.join('\n\n');
 }
 
-async function producerPrompt(ws: string, wf: Workflow, state: WorkflowState, def: StageDef): Promise<string> {
-  const contract = await store.loadContract(ws, def.agent!);
+export type Mode = 'document' | 'engineer' | 'checker';
+export const stageMode = (def: StageDef): Mode => (def.writeAccess ? 'engineer' : def.returnTo ? 'checker' : 'document');
+
+async function producerPrompt(
+  ws: string,
+  wf: Workflow,
+  state: WorkflowState,
+  def: StageDef,
+  contract: store.Contract,
+  extras: string[],
+): Promise<string> {
+  const mode = stageMode(def);
   const gate = wf.stages.find((s) => s.kind === 'gate' && s.reviews === def.id);
   const decision = gate ? state.stages[gate.id].decision : null;
   const st = state.stages[def.id];
 
-  const sections = [
-    contract.body,
-    '---',
-    `## Input artifacts\n\n${await inputsSection(ws, def.inputs ?? [])}`,
-  ];
+  const sections = [contract.body, '---', `## Input artifacts\n\n${await inputsSection(ws, def.inputs ?? [])}`, ...extras];
   if (decision?.decision === 'REJECTED' && decision.feedback) {
     sections.push(
       `## Human feedback on your previous version\n\nA human rejected the previous version with this feedback. Address it explicitly.\n\n> ${decision.feedback.replace(/\n/g, '\n> ')}`,
       `## Your previous version\n\n${await inputsSection(ws, def.outputs ?? [])}`,
     );
   }
+  if (mode === 'engineer') {
+    // Work sent back by checkers: their latest report and blockers.
+    for (const checker of wf.stages.filter((s) => s.returnTo === def.id)) {
+      const cst = state.stages[checker.id];
+      if (cst.status !== 'FAIL' || !cst.blockers.length) continue;
+      sections.push(
+        `## Blockers from ${checker.label} (fix these)\n\n${cst.blockers.map((b) => `- ${b}`).join('\n')}`,
+        `## Latest ${checker.label} report\n\n${await inputsSection(ws, checker.outputs ?? [])}`,
+      );
+    }
+  }
   if (st.status === 'FAIL' && st.blockers.length) {
     sections.push(`## Blockers from your previous attempt\n\n${st.blockers.map((b) => `- ${b}`).join('\n')}`);
+  }
+  if (mode === 'engineer') {
+    sections.push('## How to answer', 'Write the code in the workspace, then return the structured response described in your contract.');
+    return sections.join('\n\n');
   }
   const required = requiredSections(contract, def);
   const files = (def.outputs ?? [])
@@ -136,7 +165,8 @@ async function producerPrompt(ws: string, wf: Workflow, state: WorkflowState, de
   sections.push(
     '## How to answer',
     'Do not create or edit files. Return your result as the structured response: `status`, `summary`, ' +
-      '`artifacts` (one entry per file below, with the exact path and the complete content) and `blockers`.',
+      '`artifacts` (one entry per file below, with the exact path and the complete content) and `blockers`.' +
+      (mode === 'checker' ? ' `status` is your verdict: PASS or FAIL. A FAIL must list actionable blockers.' : ''),
     `## Files to return\n\n${files}`,
   );
   return sections.join('\n\n');
@@ -267,6 +297,10 @@ async function readCodexOutput(file: string): Promise<{ output: unknown; error: 
   }
 }
 
+type Collected = { code: number | null; stdout: string; stderr: string; timedOut: boolean };
+type Trees = { baseline?: string; lastReviewed?: string };
+const TREES = 'workflow/trees.json';
+
 export async function startProduce(ws: string, stageId: string): Promise<string> {
   const wf = await store.loadWorkflow(ws);
   let state = await store.loadState(ws);
@@ -276,61 +310,111 @@ export async function startProduce(ws: string, stageId: string): Promise<string>
   }
   const def = engine.stageDef(wf, stageId);
   const agent = wf.agents[def.agent!];
+  const mode = stageMode(def);
+  const contract = await store.loadContract(ws, def.agent!);
+  // Validated before the run is recorded, so a bad setup never leaves a stage stuck in RUNNING.
+  if (mode === 'engineer' && agent.cli !== 'codex') {
+    throw new engine.EngineError('unsupported', 'Only the Codex adapter supports write access in this version.');
+  }
+  const toolset = agent.cli === 'claude' ? producerToolset(contract) : undefined;
   const runId = newRunId(stageId, 'produce');
-  const runDir = `workflow/runs/${runId}`;
-  const prompt = await producerPrompt(ws, wf, state, def);
-  // Validated before the run is recorded, so an unsafe contract never leaves a stage stuck in RUNNING.
-  const toolset = agent.cli === 'claude' ? producerToolset(await store.loadContract(ws, def.agent!)) : undefined;
 
   state = engine.startRun(state, wf, stageId, runId, now());
   await store.saveState(ws, state);
-  await store.writeText(ws, `${runDir}/prompt.md`, prompt);
   await store.appendActivity(ws, {
     ts: now(), actor: 'agent', event: 'run_started', stage: stageId, agent: def.agent, cli: agent.cli, runId,
     inputs: def.inputs, message: `${agent.tool} started ${def.label} (${agent.label})`,
   });
 
-  const schema = JSON.parse((await store.readText(ws, 'workflow/schemas/producer.schema.json'))!);
+  const startedAt = state.stages[stageId].startedAt!;
+  execute(ws, wf, state, def, contract, runId, startedAt, toolset).catch((err) =>
+    store
+      .withLock(() =>
+        finishRun(ws, wf, def, runId, startedAt, {
+          status: 'FAIL', summary: 'The run could not be completed.', blockers: [`Control Center error: ${(err as Error).message}`],
+          checks: [], outputs: [], error: true,
+        }),
+      )
+      .catch((e) => console.error(`[run ${runId}]`, e)),
+  );
+  return runId;
+}
+
+async function execute(
+  ws: string,
+  wf: Workflow,
+  state: WorkflowState,
+  def: StageDef,
+  contract: store.Contract,
+  runId: string,
+  startedAt: string,
+  toolset: { tools: string[]; allowed: string[] } | undefined,
+) {
+  const mode = stageMode(def);
+  const agent = wf.agents[def.agent!];
+  const runDir = `workflow/runs/${runId}`;
+  const logFile = store.safeJoin(ws, `${runDir}/events.jsonl`);
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+  const log = (msg: string) => fs.appendFile(logFile, JSON.stringify({ ts: now(), msg }) + '\n');
+  const trees = (await store.readJson<Trees>(ws, TREES)) ?? {};
+  const extras: string[] = [];
+  const ctx: EngineerCtx & CheckerCtx = {};
+
+  if (mode === 'engineer') {
+    const before = await wsx.snapshotTree(ws);
+    if (!trees.baseline) {
+      trees.baseline = before;
+      await store.writeJson(ws, TREES, trees);
+    }
+    ctx.treeBefore = before;
+    ctx.protectedBefore = await wsx.snapshotProtected(ws);
+    await log('Snapshot of the code and of protected files taken');
+  }
+  if (mode === 'checker') {
+    await log('Running the test suite in the sandbox');
+    ctx.tests = await wsx.runTests(ws, (kill) => killers.set(runId, kill));
+    killers.delete(runId);
+    await store.writeText(ws, `${runDir}/tests.log`, ctx.tests.output);
+    await log(ctx.tests.summary);
+    if (cancelled.has(runId)) throw new Error('Cancelled by the user.');
+    const head = await wsx.snapshotTree(ws);
+    const base = def.diff === 'since-last-review' ? trees.lastReviewed ?? trees.baseline : trees.baseline;
+    if (!base) throw new Error('No implementation baseline found. Run Implementation first.');
+    const diff = await wsx.codeDiff(ws, base, head);
+    ctx.reviewedTree = head;
+    const fixReview = def.diff === 'since-last-review' && !!trees.lastReviewed;
+    const MAX = 400_000;
+    extras.push(
+      `## Diff to review (${fixReview ? 'only the changes since your last review' : 'the whole implementation'})\n\n` +
+        '```\n' + (diff.stat || '(no code changes)') + '\n```\n\n```diff\n' +
+        (diff.patch.length > MAX ? diff.patch.slice(0, MAX) + '\n... (diff truncated; read the files directly)' : diff.patch) + '\n```',
+      `## Test suite result (run by the Control Center in a sandbox)\n\nCommand: \`${ctx.tests.command ?? 'none'}\`\n\n${ctx.tests.summary}\n\n\`\`\`\n${ctx.tests.output.slice(-6000)}\n\`\`\``,
+    );
+    if (fixReview) extras.push(`## Your previous review\n\n${await inputsSection(ws, def.outputs ?? [])}`);
+  }
+
+  const prompt = await producerPrompt(ws, wf, state, def, contract, extras);
+  await store.writeText(ws, `${runDir}/prompt.md`, prompt);
+  const schemaRel = `workflow/schemas/${mode === 'engineer' ? 'implementation' : 'producer'}.schema.json`;
+  const schema = JSON.parse((await store.readText(ws, schemaRel))!);
   delete schema.$id;
   delete schema.description;
+  if (cancelled.has(runId)) throw new Error('Cancelled by the user.');
   const child = spawnCli({
     cli: agent.cli,
     cwd: ws,
     prompt,
     schema,
-    schemaPath: store.safeJoin(ws, 'workflow/schemas/producer.schema.json'),
+    schemaPath: store.safeJoin(ws, schemaRel),
     lastMessagePath: store.safeJoin(ws, `${runDir}/last-message.json`),
     tools: toolset?.tools,
     allowedTools: toolset?.allowed,
+    sandbox: mode === 'engineer' ? 'workspace-write' : 'read-only',
   });
   children.set(runId, child);
-  const startedAt = state.stages[stageId].startedAt!;
-  const logFile = store.safeJoin(ws, `${runDir}/events.jsonl`);
-
-  collect(child, logFile, agent.cli, runId, def.timeoutMinutes ? def.timeoutMinutes * 60_000 : RUN_TIMEOUT_MS.produce)
-    .then((r) => store.withLock(() => finishProduce(ws, wf, def, runId, startedAt, r)))
-    .catch((err) => console.error(`[run ${runId}]`, err));
-  return runId;
-}
-
-async function finishProduce(
-  ws: string,
-  wf: Workflow,
-  def: StageDef,
-  runId: string,
-  startedAt: string,
-  r: { code: number | null; stdout: string; stderr: string; timedOut: boolean },
-) {
-  const runDir = `workflow/runs/${runId}`;
-  const agent = wf.agents[def.agent!];
+  const r = await collect(child, logFile, agent.cli, runId, def.timeoutMinutes ? def.timeoutMinutes * 60_000 : RUN_TIMEOUT_MS.produce);
   await store.writeText(ws, `${runDir}/stdout.jsonl`, r.stdout);
   if (r.stderr.trim()) await store.writeText(ws, `${runDir}/stderr.log`, r.stderr);
-
-  let status: 'PASS' | 'FAIL' = 'FAIL';
-  let summary: string | null = null;
-  let blockers: string[] = [];
-  let checks: { name: string; ok: boolean; detail: string }[] = [];
-  const outputs: string[] = [];
 
   const parsed =
     r.code !== 0 || r.timedOut
@@ -339,52 +423,193 @@ async function finishProduce(
         ? extractClaudeResult(r.stdout)
         : await readCodexOutput(store.safeJoin(ws, `${runDir}/last-message.json`));
 
-  if (parsed.error) {
-    blockers = [parsed.error];
-    summary = 'The agent run did not complete.';
-  } else {
-    const out = parsed.output as { status: 'PASS' | 'FAIL'; summary: string; artifacts: Artifact[]; blockers: string[] };
-    const contract = await store.loadContract(ws, def.agent!);
-    const artifacts = (out.artifacts ?? []).map((a) => ({ path: a.path.replace(/^\.\//, ''), content: a.content }));
-    checks = artifactChecks(artifacts, def.outputs ?? [], requiredSections(contract, def));
-    const failed = checks.filter((c) => !c.ok).map((c) => `Check failed: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
-    summary = out.summary;
-    blockers = [...(out.blockers ?? []), ...failed];
-    status = out.status === 'PASS' && failed.length === 0 ? 'PASS' : 'FAIL';
-    for (const a of artifacts) {
-      if (!(def.outputs ?? []).includes(a.path) || !a.content.trim()) continue;
-      // On FAIL keep drafts inside the run folder, never overwriting the last good artifact.
-      const target = status === 'PASS' ? a.path : `${runDir}/draft/${a.path}`;
-      await store.writeText(ws, target, a.content.trimEnd() + '\n');
-      outputs.push(target);
-    }
+  if (mode === 'engineer') {
+    // Protected files are restored even when the run failed or was cancelled.
+    const violations = await wsx.restoreProtected(ws, ctx.protectedBefore!);
+    if (violations.length) await log(`Reverted changes to protected files: ${violations.join(', ')}`);
+    const result = await engineerResult(ws, def, runId, parsed, violations, ctx.treeBefore!, log);
+    return store.withLock(() => finishRun(ws, wf, def, runId, startedAt, result));
   }
+  const result = mode === 'checker' ? await checkerResult(ws, def, runId, parsed, contract, ctx) : await documentResult(ws, def, runId, parsed, contract);
+  return store.withLock(() => finishRun(ws, wf, def, runId, startedAt, result));
+}
 
+interface EngineerCtx { treeBefore?: string; protectedBefore?: Map<string, Buffer> }
+interface CheckerCtx { tests?: wsx.TestResult; reviewedTree?: string }
+interface StageResult {
+  status: 'PASS' | 'FAIL';
+  summary: string | null;
+  blockers: string[];
+  checks: Check[];
+  outputs: string[];
+  error: boolean;
+  extra?: Record<string, unknown>;
+}
+type Parsed = { output: unknown; error: string | null };
+
+async function documentResult(ws: string, def: StageDef, runId: string, parsed: Parsed, contract: store.Contract): Promise<StageResult> {
+  if (parsed.error) return { status: 'FAIL', summary: 'The agent run did not complete.', blockers: [parsed.error], checks: [], outputs: [], error: true };
+  const out = parsed.output as { status: 'PASS' | 'FAIL'; summary: string; artifacts: Artifact[]; blockers: string[] };
+  const artifacts = (out.artifacts ?? []).map((a) => ({ path: a.path.replace(/^\.\//, ''), content: a.content }));
+  const checks = artifactChecks(artifacts, def.outputs ?? [], requiredSections(contract, def));
+  const failed = checks.filter((c) => !c.ok).map((c) => `Check failed: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
+  const status = out.status === 'PASS' && failed.length === 0 ? 'PASS' : 'FAIL';
+  const outputs = await writeArtifacts(ws, def, runId, artifacts, status === 'PASS');
+  return { status, summary: out.summary, blockers: [...(out.blockers ?? []), ...failed], checks, outputs, error: false };
+}
+
+async function writeArtifacts(ws: string, def: StageDef, runId: string, artifacts: Artifact[], final: boolean): Promise<string[]> {
+  const outputs: string[] = [];
+  for (const a of artifacts) {
+    if (!(def.outputs ?? []).includes(a.path) || !a.content.trim()) continue;
+    // Drafts stay inside the run folder, never overwriting the last good artifact.
+    const target = final ? a.path : `workflow/runs/${runId}/draft/${a.path}`;
+    await store.writeText(ws, target, a.content.trimEnd() + '\n');
+    outputs.push(target);
+  }
+  return outputs;
+}
+
+async function checkerResult(ws: string, def: StageDef, runId: string, parsed: Parsed, contract: store.Contract, ctx: CheckerCtx): Promise<StageResult> {
+  const testCheck = { name: 'Test suite passes (sandboxed run by the Control Center)', ok: ctx.tests!.ok, detail: ctx.tests!.summary };
+  if (parsed.error) {
+    return { status: 'FAIL', summary: 'The review did not complete.', blockers: [parsed.error], checks: [testCheck], outputs: [], error: true };
+  }
+  const out = parsed.output as { status: 'PASS' | 'FAIL'; summary: string; artifacts: Artifact[]; blockers: string[] };
+  const artifacts = (out.artifacts ?? []).map((a) => ({ path: a.path.replace(/^\.\//, ''), content: a.content }));
+  const checks = artifactChecks(artifacts, def.outputs ?? [], requiredSections(contract, def));
+  const invalid = checks.filter((c) => !c.ok).map((c) => `Report check failed: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
+  if (out.status === 'FAIL' && !(out.blockers ?? []).length) invalid.push('FAIL verdict without actionable blockers.');
+  if (invalid.length) {
+    // A malformed report is the reviewer's problem, not the engineer's: fail in place.
+    const outputs = await writeArtifacts(ws, def, runId, artifacts, false);
+    return { status: 'FAIL', summary: out.summary, blockers: invalid, checks: [...checks, testCheck], outputs, error: true };
+  }
+  const blockers = [...(out.blockers ?? [])];
+  if (!ctx.tests!.ok) blockers.push(`Test suite does not pass: ${ctx.tests!.summary}`);
+  const status = out.status === 'PASS' && ctx.tests!.ok ? 'PASS' : 'FAIL';
+  const outputs = await writeArtifacts(ws, def, runId, artifacts, true);
+  outputs.push(`workflow/runs/${runId}/tests.log`);
+  if (def.diff === 'since-last-review') {
+    const trees = (await store.readJson<Trees>(ws, TREES)) ?? {};
+    await store.writeJson(ws, TREES, { ...trees, lastReviewed: ctx.reviewedTree });
+  }
+  return { status, summary: out.summary, blockers, checks: [...checks, testCheck], outputs, error: false, extra: { reviewedTree: ctx.reviewedTree } };
+}
+
+interface Implementation {
+  status: 'PASS' | 'FAIL';
+  summary: string;
+  tasks_completed: string[];
+  tasks_remaining: string[];
+  files_changed: string[];
+  how_to_run: string;
+  fixes: { blocker: string; resolution: string }[];
+  notes_for_reviewers: string;
+  blockers: string[];
+}
+
+export function renderNotes(runId: string, impl: Implementation, tests: wsx.TestResult, changed: string[], violations: string[]): string {
+  const list = (xs: string[]) => (xs.length ? xs.map((x) => `- ${x}`).join('\n') : '_None._');
+  return [
+    '# Implementation notes',
+    '',
+    `- Run: \`${runId}\``,
+    `- Reported status: **${impl.status}**`,
+    `- Test suite (run by the Control Center in a sandbox): ${tests.summary}`,
+    `- How to run: \`${impl.how_to_run}\``,
+    '',
+    '## Summary', '', impl.summary, '',
+    '## Tasks completed', '', list(impl.tasks_completed), '',
+    '## Tasks remaining', '', list(impl.tasks_remaining), '',
+    '## Fixes in this run', '',
+    impl.fixes.length ? impl.fixes.map((f) => `- **${f.blocker}**\n  ${f.resolution}`).join('\n') : '_Not a fix run._', '',
+    '## Files changed (measured by the Control Center)', '', list(changed), '',
+    '## Notes for reviewers', '', impl.notes_for_reviewers || '_None._', '',
+    ...(violations.length ? ['## Reverted changes to protected files', '', list(violations), ''] : []),
+    '## Blockers', '', list(impl.blockers), '',
+  ].join('\n');
+}
+
+async function engineerResult(
+  ws: string,
+  def: StageDef,
+  runId: string,
+  parsed: Parsed,
+  violations: string[],
+  treeBefore: string,
+  log: (m: string) => Promise<void>,
+): Promise<StageResult> {
+  const protectedCheck = {
+    name: 'Files owned by other roles left untouched',
+    ok: !violations.length,
+    detail: violations.length ? `reverted: ${violations.join(', ')}` : '',
+  };
+  if (parsed.error) {
+    return { status: 'FAIL', summary: 'The implementation run did not complete.', blockers: [parsed.error], checks: [protectedCheck], outputs: [], error: true };
+  }
+  const impl = parsed.output as Implementation;
+  await log('Running the test suite in the sandbox');
+  const tests = await wsx.runTests(ws);
+  await store.writeText(ws, `workflow/runs/${runId}/tests.log`, tests.output);
+  await log(tests.summary);
+  const treeAfter = await wsx.snapshotTree(ws);
+  const changed = await wsx.changedFiles(ws, treeBefore, treeAfter);
+
+  const checks = [
+    protectedCheck,
+    { name: 'Test suite passes (sandboxed run by the Control Center)', ok: tests.ok, detail: tests.summary },
+    { name: 'Every planned task done', ok: impl.tasks_remaining.length === 0, detail: impl.tasks_remaining.join(', ') },
+    { name: 'Code changed', ok: changed.length > 0, detail: `${changed.length} files` },
+  ];
+  const failed = checks.filter((c) => !c.ok).map((c) => `Check failed: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
+  const status = impl.status === 'PASS' && failed.length === 0 ? 'PASS' : 'FAIL';
+  const notes = def.outputs![0];
+  await store.writeText(ws, notes, renderNotes(runId, impl, tests, changed, violations));
+  return {
+    status,
+    summary: impl.summary,
+    blockers: [...impl.blockers, ...failed],
+    checks,
+    outputs: [notes, `workflow/runs/${runId}/tests.log`],
+    error: false,
+    extra: { treeBefore, treeAfter, filesChanged: changed },
+  };
+}
+
+async function finishRun(ws: string, wf: Workflow, def: StageDef, runId: string, startedAt: string, res: StageResult) {
+  const agent = wf.agents[def.agent!];
   const completedAt = now();
-  await store.writeJson(ws, `${runDir}/handoff.json`, {
+  if (cancelled.delete(runId) && !res.blockers.includes('Cancelled by the user.')) {
+    res = { ...res, status: 'FAIL', blockers: ['Cancelled by the user.'], error: true };
+  }
+  await store.writeJson(ws, `workflow/runs/${runId}/handoff.json`, {
     protocol: 'aisdlc.handoff/v1',
     runId,
     stage: def.id,
     agent: def.agent,
     cli: agent.cli,
-    status,
-    summary: summary ?? '',
-    outputs,
-    blockers,
-    checks,
-    next: status === 'PASS' ? def.next ?? null : null,
-    returnTo: status === 'FAIL' ? def.returnTo ?? def.id : null,
+    status: res.status,
+    summary: res.summary ?? '',
+    outputs: res.outputs,
+    blockers: res.blockers,
+    checks: res.checks,
+    next: res.status === 'PASS' ? def.next ?? null : null,
+    returnTo: res.status === 'FAIL' ? (res.error ? def.id : def.returnTo ?? def.id) : null,
     startedAt,
     completedAt,
+    ...(res.extra ?? {}),
   });
 
   let state = await store.loadState(ws);
-  state = engine.completeRun(state, wf, runId, { status, summary, blockers }, completedAt);
+  state = engine.completeRun(state, wf, runId, { status: res.status, summary: res.summary, blockers: res.blockers, error: res.error }, completedAt);
   await store.saveState(ws, state);
+  const finalStatus = state.stages[def.id].status;
+  const routed = res.status === 'FAIL' && !res.error && def.returnTo ? `, sent back to ${engine.stageDef(wf, def.returnTo).label}` : '';
   await store.appendActivity(ws, {
     ts: completedAt, actor: 'agent', event: 'run_finished', stage: def.id, agent: def.agent, cli: agent.cli, runId,
-    result: state.stages[def.id].status, outputs, blockers,
-    message: `${def.label} ${state.stages[def.id].status}${outputs.length && status === 'PASS' ? `, ${outputs.join(', ')} written` : ''}`,
+    result: finalStatus, outputs: res.outputs, blockers: res.blockers,
+    message: `${def.label} ${finalStatus}${routed}${res.status === 'PASS' && res.outputs.length ? `, ${res.outputs.filter((o) => !o.endsWith('.log')).join(', ')} written` : ''}`,
   });
 }
 
@@ -498,9 +723,11 @@ async function finishCheck(
 
 export function cancelRun(runId: string): boolean {
   const child = children.get(runId);
-  if (!child) return false;
+  const kill = killers.get(runId);
+  if (!child && !kill) return false;
   cancelled.add(runId);
-  child.kill('SIGTERM');
+  child?.kill('SIGTERM');
+  kill?.();
   return true;
 }
 

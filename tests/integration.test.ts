@@ -286,6 +286,106 @@ test('PRD, design and tech design each pass through their own gate', async () =>
   await post('/api/gates/tech-approval/decision', { decision: 'APPROVED' });
   const s = await state();
   assert.equal(s.currentStage, 'implementation');
-  assert.equal(s.stages.implementation.status, 'WAITING', 'implementation arrives in v0.3');
+  assert.equal(s.stages.implementation.status, 'READY');
   assert.equal(gitCount(), 5, 'one checkpoint commit per approved gate');
+});
+
+const runOf = async (stage: string) => (await state()).stages[stage].lastRunId as string;
+const promptOf = async (stage: string) => readFileSync(path.join(ws(), 'workflow/runs', await runOf(stage), 'prompt.md'), 'utf8');
+async function run(stage: string) {
+  const r = await post(`/api/stages/${stage}/run`);
+  assert.equal(r.status, 202, `${stage} starts: ${r.body.error ?? ''}`);
+  await waitIdle();
+  return (await state()).stages[stage];
+}
+const passes = async (stage: string) => {
+  const st = await run(stage);
+  assert.equal(st.status, 'PASS', `${stage}: ${st.blockers.join('; ')}`);
+};
+
+test('the engineer cannot change other roles\' files: changes are reverted and the run fails', async () => {
+  const prd = readFileSync(path.join(ws(), 'product/prd.md'), 'utf8');
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ws() }).toString();
+  modes({ codex: 'tamper' });
+  const st = await run('implementation');
+  assert.equal(st.status, 'FAIL');
+  assert.ok(st.blockers.some((b: string) => b.includes('modified product/prd.md')));
+  assert.equal(readFileSync(path.join(ws(), 'product/prd.md'), 'utf8'), prd, 'PRD restored byte for byte');
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ws() }).toString(), head, 'no commits by the engineer');
+  modes({});
+});
+
+test('the engineer cannot pass with a failing test suite: the Control Center runs it', async () => {
+  modes({ codex: 'break-tests' });
+  const st = await run('implementation');
+  assert.equal(st.status, 'FAIL');
+  assert.ok(st.blockers.some((b: string) => b.includes('Test suite passes')));
+  modes({});
+});
+
+test('a passing implementation writes notes and opens code review', async () => {
+  const st = await run('implementation');
+  assert.equal(st.status, 'PASS', st.blockers.join('; '));
+  const notes = readFileSync(path.join(ws(), 'engineering/implementation-notes.md'), 'utf8');
+  assert.match(notes, /Test suite \(run by the Control Center in a sandbox\): Test suite passed/);
+  assert.match(notes, /src\/app\.js/);
+  const s = await state();
+  assert.equal(s.currentStage, 'code-review');
+  assert.equal(s.stages['code-review'].status, 'READY');
+});
+
+test('a FAIL review sends actionable blockers back to the engineer, who receives the report', async () => {
+  modes({ claude: 'verdict-fail' });
+  const cr = await run('code-review');
+  assert.equal(cr.status, 'FAIL');
+  assert.match(await promptOf('code-review'), /the whole implementation/);
+  assert.match(await promptOf('code-review'), /Test suite passed/);
+  assert.ok(existsSync(path.join(ws(), 'engineering/code-review.md')), 'a FAIL report is still written');
+  let s = await state();
+  assert.equal(s.currentStage, 'implementation');
+  modes({});
+  const im = await run('implementation');
+  assert.equal(im.status, 'PASS');
+  const prompt = await promptOf('implementation');
+  assert.match(prompt, /Blockers from Code review \(fix these\)/);
+  assert.match(prompt, /AC-1 is not met/);
+  s = await state();
+  assert.equal(s.currentStage, 'code-review');
+});
+
+test('a reviewer FAIL without actionable blockers fails the review itself, not the engineer', async () => {
+  modes({ claude: 'fail-no-blockers' });
+  const cr = await run('code-review');
+  assert.equal(cr.status, 'FAIL');
+  assert.ok(cr.blockers.some((b: string) => b.includes('without actionable blockers')));
+  const s = await state();
+  assert.equal(s.currentStage, 'code-review');
+  assert.equal(s.stages.implementation.status, 'PASS');
+  modes({});
+});
+
+test('a re-review sees only the fix and its previous report', async () => {
+  const cr = await run('code-review');
+  assert.equal(cr.status, 'PASS', cr.blockers.join('; '));
+  const prompt = await promptOf('code-review');
+  assert.match(prompt, /only the changes since your last review/);
+  assert.match(prompt, /## Your previous review/);
+  assert.match(prompt, /fix run: true/, 'the fix diff is included');
+  assert.doesNotMatch(prompt, /package\.json \|/, 'unchanged files are not in the fix diff');
+});
+
+test('a QA FAIL goes back through the engineer and code review before QA runs again', async () => {
+  modes({ claude: 'verdict-fail' });
+  assert.equal((await run('engineering-qa')).status, 'FAIL');
+  modes({});
+  assert.equal((await state()).currentStage, 'implementation');
+  await passes('implementation');
+  assert.equal((await state()).currentStage, 'code-review');
+  await passes('code-review');
+  await passes('engineering-qa');
+  assert.match(await promptOf('engineering-qa'), /the whole implementation/, 'QA always sees everything');
+  await passes('design-qa');
+  const s = await state();
+  assert.equal(s.currentStage, 'product-review');
+  assert.equal(gitCount(), 5, 'the engineering loop never commits');
 });

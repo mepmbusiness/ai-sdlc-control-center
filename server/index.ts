@@ -192,7 +192,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     if (p === '/api/artifact') {
       const ws = requireWorkspace();
       const rel = url.searchParams.get('path') ?? '';
-      if (!/\.(md|json|html)$/.test(rel)) throw new HttpError(400, 'Only Markdown, JSON and HTML artifacts can be viewed.');
+      if (!/\.(md|json|html|log)$/.test(rel)) throw new HttpError(400, "Only Markdown, JSON, HTML and log files can be viewed.");
       try {
         store.safeJoin(ws, rel);
       } catch (e) {

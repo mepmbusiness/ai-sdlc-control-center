@@ -127,7 +127,7 @@ function fileList(paths, artifacts) {
     .map((p) => {
       const a = artifacts.find((x) => x.path === p);
       const exists = a ? a.exists : true;
-      return exists && /\.(md|json|html)$/.test(p)
+      return exists && /\.(md|json|html|log)$/.test(p)
         ? `<li><button data-open="${esc(p)}">${esc(p)}</button></li>`
         : `<li class="missing">${esc(p)}${exists ? '' : ' · not yet'}</li>`;
     })

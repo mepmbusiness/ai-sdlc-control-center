@@ -30,6 +30,8 @@ export interface StageDef {
   reviews?: string;
   check?: { agent: string };
   timeoutMinutes?: number;
+  writeAccess?: boolean; // the stage's agent edits code directly, in a sandbox
+  diff?: 'since-last-review' | 'since-baseline'; // what a checker is shown
 }
 
 export interface AgentDef {
@@ -199,6 +201,9 @@ export interface RunResult {
   status: 'PASS' | 'FAIL';
   summary: string | null;
   blockers: string[];
+  // true when the run itself broke (CLI crash, invalid report). Only a real
+  // FAIL verdict sends work back to returnTo; a broken run just fails in place.
+  error?: boolean;
 }
 
 export function completeRun(
@@ -244,7 +249,7 @@ export function completeRun(
       `Failed ${st.consecutiveFailures} times in a row. A human must review before retrying.`,
     ];
   }
-  if (def.returnTo && st.status === 'FAIL') {
+  if (def.returnTo && st.status === 'FAIL' && !result.error) {
     const back = stageDef(wf, def.returnTo);
     next.stages[back.id].status = 'READY';
     next.currentStage = back.id;
@@ -354,6 +359,9 @@ export function unblock(state: WorkflowState, wf: Workflow, stageId: string, now
   if (state.stages[stageId].status !== 'BLOCKED') {
     throw new EngineError('not_blocked', `"${def.label}" is not blocked.`);
   }
+  if (state.activeRun) {
+    throw new EngineError('busy', `Wait for ${state.activeRun.agent} to finish before unblocking.`);
+  }
   const next = structuredClone(state);
   next.stages[stageId].status = 'READY';
   next.stages[stageId].consecutiveFailures = 0;
@@ -369,7 +377,7 @@ export function interruptActiveRun(state: WorkflowState, wf: Workflow, reason: s
   if (run.purpose === 'check') {
     return completeCheck(state, run.runId, { status: 'ERROR', summary: reason, findings: 0 }, now);
   }
-  return completeRun(state, wf, run.runId, { status: 'FAIL', summary: reason, blockers: [reason] }, now);
+  return completeRun(state, wf, run.runId, { status: 'FAIL', summary: reason, blockers: [reason], error: true }, now);
 }
 
 // Used after a workflow definition changes (for example, a new version enables

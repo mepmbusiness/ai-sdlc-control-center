@@ -43,3 +43,11 @@ test('live log lines describe tool use in plain words', () => {
   assert.equal(describeEvent('codex', JSON.stringify({ type: 'item.started', item: { type: 'command_execution', command: 'ls' } })), '→ ls');
   assert.equal(describeEvent('claude', 'not json'), null);
 });
+
+test('only the engineer gets a writable sandbox, and never full access', () => {
+  const eng = buildArgs({ ...base, cli: 'codex', cwd: '/w', sandbox: 'workspace-write' });
+  assert.equal(eng[eng.indexOf('--sandbox') + 1], 'workspace-write');
+  assert.ok(!eng.includes('danger-full-access'));
+  const reviewer = buildArgs({ ...base, cli: 'codex', cwd: '/w' });
+  assert.equal(reviewer[reviewer.indexOf('--sandbox') + 1], 'read-only');
+});

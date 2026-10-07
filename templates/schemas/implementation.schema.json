@@ -1,0 +1,27 @@
+{
+  "$id": "aisdlc.implementation-response/v1",
+  "description": "Final response of the Software Engineer. Code is written directly in the sandboxed workspace; this response is the engineer's report, saved by the Control Center as engineering/implementation-notes.md.",
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+    "summary": { "type": "string" },
+    "tasks_completed": { "type": "array", "items": { "type": "string" }, "description": "Task IDs from the implementation plan, e.g. T-1." },
+    "tasks_remaining": { "type": "array", "items": { "type": "string" } },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "how_to_run": { "type": "string", "description": "One command to start the app." },
+    "fixes": {
+      "type": "array",
+      "description": "On a fix run: one entry per blocker received, saying what was done.",
+      "items": {
+        "type": "object",
+        "properties": { "blocker": { "type": "string" }, "resolution": { "type": "string" } },
+        "required": ["blocker", "resolution"],
+        "additionalProperties": false
+      }
+    },
+    "notes_for_reviewers": { "type": "string" },
+    "blockers": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["status", "summary", "tasks_completed", "tasks_remaining", "files_changed", "how_to_run", "fixes", "notes_for_reviewers", "blockers"],
+  "additionalProperties": false
+}

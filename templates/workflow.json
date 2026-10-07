@@ -129,14 +129,18 @@
       "inputs": [
         "product/prd.md",
         "design/design-spec.md",
+        "design/design-system.md",
+        "design/prototype/index.html",
         "engineering/tech-spec.md",
         "engineering/implementation-plan.md"
       ],
       "outputs": [
-        "src/"
+        "engineering/implementation-notes.md"
       ],
       "next": "code-review",
-      "enabled": false
+      "enabled": true,
+      "writeAccess": true,
+      "timeoutMinutes": 60
     },
     {
       "id": "code-review",
@@ -145,15 +149,18 @@
       "agent": "code-reviewer",
       "inputs": [
         "product/prd.md",
+        "design/design-spec.md",
         "engineering/tech-spec.md",
-        "engineering/implementation-plan.md"
+        "engineering/implementation-plan.md",
+        "engineering/implementation-notes.md"
       ],
       "outputs": [
         "engineering/code-review.md"
       ],
       "next": "engineering-qa",
       "returnTo": "implementation",
-      "enabled": false
+      "enabled": true,
+      "diff": "since-last-review"
     },
     {
       "id": "engineering-qa",
@@ -162,14 +169,17 @@
       "agent": "qa-engineer",
       "inputs": [
         "product/prd.md",
-        "engineering/tech-spec.md"
+        "engineering/tech-spec.md",
+        "engineering/implementation-plan.md",
+        "engineering/implementation-notes.md"
       ],
       "outputs": [
         "engineering/qa-report.md"
       ],
       "next": "design-qa",
       "returnTo": "implementation",
-      "enabled": false
+      "enabled": true,
+      "diff": "since-baseline"
     },
     {
       "id": "design-qa",
@@ -177,16 +187,19 @@
       "kind": "agent",
       "agent": "design-qa",
       "inputs": [
+        "product/prd.md",
         "design/design-spec.md",
         "design/design-system.md",
-        "design/prototype/index.html"
+        "design/prototype/index.html",
+        "engineering/implementation-notes.md"
       ],
       "outputs": [
         "design/design-qa.md"
       ],
       "next": "product-review",
       "returnTo": "implementation",
-      "enabled": false
+      "enabled": true,
+      "diff": "since-baseline"
     },
     {
       "id": "product-review",
@@ -276,5 +289,5 @@
       "tool": "Claude"
     }
   },
-  "version": "0.2"
+  "version": "0.3"
 }

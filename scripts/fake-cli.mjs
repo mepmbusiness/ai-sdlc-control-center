@@ -5,7 +5,9 @@
 // Behavior is read on every call from the JSON file in FAKE_MODE_FILE, e.g.
 // {"claude": "pass", "codex": "fail"}. Modes: pass | fail | missing-section | crash | slow | logged-out.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 
 const args = process.argv.slice(2);
 const flavor = args.shift();
@@ -19,6 +21,13 @@ try {
 if (args[0] === '--version') {
   console.log(flavor === 'claude' ? '2.1.288 (Claude Code) [fake]' : 'codex-cli 0.159.2 [fake]');
   process.exit(0);
+}
+// `codex sandbox [-c k=v]... <command...>`: runs the command (no real sandbox in tests).
+if (args[0] === 'sandbox') {
+  let i = 1;
+  while (args[i] === '-c') i += 2;
+  const r = spawnSync(args[i], args.slice(i + 1), { stdio: 'inherit' });
+  process.exit(r.status ?? 1);
 }
 if (args[0] === 'auth' && args[1] === 'status') {
   console.log(JSON.stringify({ loggedIn: mode !== 'logged-out', authMethod: mode === 'logged-out' ? 'none' : 'claude.ai' }));
@@ -66,7 +75,11 @@ process.stdin.on('end', async () => {
     const output =
       mode === 'fail'
         ? { status: 'FAIL', summary: 'Input too vague.', artifacts: [], blockers: ['The input does not say who has the problem.'] }
-        : { status: 'PASS', summary: 'Artifacts written.', artifacts, blockers: [] };
+        : mode === 'verdict-fail'
+          ? { status: 'FAIL', summary: 'Found a defect.', artifacts, blockers: ['AC-1 is not met in src/app.js: add() ignores negative numbers.'] }
+          : mode === 'fail-no-blockers'
+            ? { status: 'FAIL', summary: 'Not good.', artifacts, blockers: [] }
+            : { status: 'PASS', summary: 'Artifacts written.', artifacts, blockers: [] };
     const sawFeedback = prompt.includes('Human feedback on your previous version');
     if (sawFeedback) output.summary += ' Addressed human feedback.';
     const events = [
@@ -81,6 +94,28 @@ process.stdin.on('end', async () => {
 
   // codex
   const out = args[args.indexOf('--output-last-message') + 1];
+  if (args[args.indexOf('--sandbox') + 1] === 'workspace-write') {
+    const cwd = args[args.indexOf('--cd') + 1];
+    const put = (rel, text) => {
+      mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
+      writeFileSync(path.join(cwd, rel), text);
+    };
+    put('package.json', JSON.stringify({ type: 'module', scripts: { test: 'node --test' } }));
+    put('src/app.js', `export const add = (a, b) => a + b;\n// fix run: ${prompt.includes("(fix these)")} at ${Date.now()}\n`);
+    put('test/app.test.js', `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { add } from '../src/app.js';\ntest('adds', () => assert.equal(add(1, 2), ${mode === 'break-tests' ? 4 : 3}));\n`);
+    if (mode === 'tamper') put('product/prd.md', '# PRD rewritten by the engineer\n');
+    const fixing = prompt.includes('(fix these)');
+    writeFileSync(out, JSON.stringify({
+      status: 'PASS', summary: fixing ? 'Fixed the reported blockers.' : 'Implemented all tasks.',
+      tasks_completed: ['T-1'], tasks_remaining: [], files_changed: ['src/app.js', 'test/app.test.js', 'package.json'],
+      how_to_run: 'node src/app.js', fixes: fixing ? [{ blocker: 'reported blocker', resolution: 'fixed' }] : [],
+      notes_for_reviewers: 'Small app.', blockers: [],
+    }));
+    console.log(JSON.stringify({ type: 'thread.started' }));
+    console.log(JSON.stringify({ type: 'item.started', item: { type: 'command_execution', command: 'node --test' } }));
+    console.log(JSON.stringify({ type: 'turn.completed' }));
+    process.exit(0);
+  }
   const critique =
     mode === 'fail'
       ? { verdict: 'CONCERNS', summary: 'Two claims lack sources.', findings: [{ severity: 'high', issue: 'Unsourced fact', evidence: 'Facts section', suggestion: 'Add a source.' }] }

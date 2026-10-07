@@ -143,7 +143,7 @@ test('a run interrupted by a server restart is closed as a failure', () => {
 });
 
 test('disabled stages explain why they cannot run', () => {
-  const reasons = runBlockers(fresh(), wf, 'implementation');
+  const reasons = runBlockers(fresh(), wf, 'product-review');
   assert.ok(reasons.some((r) => r.includes('not available')));
 });
 
@@ -156,4 +156,33 @@ test('reconcile makes the current stage runnable once a new version enables it',
   s = reconcile(s, wf, T);
   assert.equal(s.stages['product-definition'].status, 'READY');
   assert.equal(s.stages.discovery.status, 'PASS', 'history is untouched');
+});
+
+test('a broken checker run fails in place instead of bouncing work to the engineer', () => {
+  const all: Workflow = { ...wf, stages: wf.stages.map((d) => ({ ...d, enabled: true })) };
+  let s = initialState(all, { name: 'Demo', slug: 'demo' }, T);
+  s.stages['code-review'].status = 'READY';
+  s.currentStage = 'code-review';
+  s = startRun(s, all, 'code-review', 'cr1', T);
+  s = completeRun(s, all, 'cr1', { status: 'FAIL', summary: null, blockers: ['CLI crashed'], error: true }, T);
+  assert.equal(s.stages['code-review'].status, 'FAIL');
+  assert.equal(s.currentStage, 'code-review');
+  assert.equal(s.stages.implementation.status, 'WAITING');
+});
+
+test('the fix loop goes back through code review, then QA, then design QA', () => {
+  const all: Workflow = { ...wf, stages: wf.stages.map((d) => ({ ...d, enabled: true })) };
+  let s = initialState(all, { name: 'Demo', slug: 'demo' }, T);
+  s.stages['engineering-qa'].status = 'READY';
+  s.currentStage = 'engineering-qa';
+  s = startRun(s, all, 'engineering-qa', 'qa1', T);
+  s = completeRun(s, all, 'qa1', { status: 'FAIL', summary: null, blockers: ['AC-4 fails on empty input'] }, T);
+  assert.equal(s.currentStage, 'implementation');
+  s = startRun(s, all, 'implementation', 'im2', T);
+  s = completeRun(s, all, 'im2', { status: 'PASS', summary: null, blockers: [] }, T);
+  assert.equal(s.currentStage, 'code-review', 'a fix is reviewed before QA runs again');
+  s = startRun(s, all, 'code-review', 'cr2', T);
+  s = completeRun(s, all, 'cr2', { status: 'PASS', summary: null, blockers: [] }, T);
+  assert.equal(s.currentStage, 'engineering-qa');
+  assert.equal(s.stages['engineering-qa'].status, 'READY');
 });
