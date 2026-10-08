@@ -151,7 +151,7 @@ async function producerPrompt(
       );
     }
   }
-  if (st.status === 'FAIL' && st.blockers.length) {
+  if (st.blockers.length) {
     sections.push(`## Blockers from your previous attempt\n\n${st.blockers.map((b) => `- ${b}`).join('\n')}`);
   }
   if (mode === 'engineer') {
@@ -319,6 +319,9 @@ export async function startProduce(ws: string, stageId: string): Promise<string>
   const toolset = agent.cli === 'claude' ? producerToolset(contract) : undefined;
   const runId = newRunId(stageId, 'produce');
 
+  // The prompt is built from the state before the run starts: starting a run
+  // clears the stage's blockers, and the agent needs to see them.
+  const before = state;
   state = engine.startRun(state, wf, stageId, runId, now());
   await store.saveState(ws, state);
   await store.appendActivity(ws, {
@@ -327,7 +330,7 @@ export async function startProduce(ws: string, stageId: string): Promise<string>
   });
 
   const startedAt = state.stages[stageId].startedAt!;
-  execute(ws, wf, state, def, contract, runId, startedAt, toolset).catch((err) =>
+  execute(ws, wf, before, def, contract, runId, startedAt, toolset).catch((err) =>
     store
       .withLock(() =>
         finishRun(ws, wf, def, runId, startedAt, {
@@ -454,7 +457,8 @@ async function documentResult(ws: string, def: StageDef, runId: string, parsed: 
   const checks = artifactChecks(artifacts, def.outputs ?? [], requiredSections(contract, def));
   const failed = checks.filter((c) => !c.ok).map((c) => `Check failed: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
   const status = out.status === 'PASS' && failed.length === 0 ? 'PASS' : 'FAIL';
-  const outputs = await writeArtifacts(ws, def, runId, artifacts, status === 'PASS');
+  // A verdict stage keeps its report on FAIL, since the report explains the FAIL.
+  const outputs = await writeArtifacts(ws, def, runId, artifacts, status === 'PASS' || (!!def.verdict && failed.length === 0));
   return { status, summary: out.summary, blockers: [...(out.blockers ?? []), ...failed], checks, outputs, error: false };
 }
 

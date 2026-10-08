@@ -229,6 +229,9 @@ function attention() {
   if (!run && cur.status === 'WAITING' && !curDef.enabled) {
     items.push(['ready', 'Next', `${curDef.label} comes next`, 'This stage arrives in the next build of the Control Center. Everything so far is saved in the repository.', curDef.id, 'Open']);
   }
+  if (curDef.kind === 'end' && cur.status === 'PASS') {
+    items.unshift(['ship', 'Ready to ship', 'Approved for release', `Every gate is approved. The release commit is tagged in the product repository (${ui.data.workspace}).`, curDef.id, 'Open']);
+  }
   if (!items.length) return '';
   return `<section class="attention" aria-label="Needs your attention">${items
     .map(
@@ -338,6 +341,17 @@ function agentControls(def, st) {
     out.push(`<div class="section-title">Live progress</div><div class="log" data-log="${state.activeRun.runId}">${logLines(ui.logs[state.activeRun.runId])}</div>
       <div class="actions"><button class="btn reject small" data-cancel="${state.activeRun.runId}">Stop this run</button></div>`);
     return out.join('');
+  }
+  if (def.verdict && ['FAIL', 'BLOCKED'].includes(st.status) && !state.activeRun) {
+    const earlier = ui.data.workflow.stages.filter(
+      (s) => s.kind === 'agent' && s.enabled && ui.data.workflow.stages.indexOf(s) < ui.data.workflow.stages.indexOf(def),
+    );
+    const draft = ui.drafts.feedback[`reopen:${def.id}`] ?? '';
+    out.push(`<div class="section-title">Send the work back</div>
+      <p class="muted" style="font-size:13.5px">The review blocked the release. Choose which stage should fix it; the agent there receives your reason.</p>
+      <textarea id="reopen-${def.id}" data-feedback="reopen:${def.id}" placeholder="What must change before release?">${esc(draft)}</textarea>
+      <div class="actions">${earlier.map((s) => `<button class="btn small" data-reopen="${s.id}" data-from="${def.id}">Reopen ${esc(s.label)}</button>`).join('')}</div>`);
+    if (ui.errors[`reopen:${def.id}`]) out.push(`<p class="error-text">${esc(ui.errors[`reopen:${def.id}`])}</p>`);
   }
   if (st.status === 'BLOCKED') {
     out.push(`<div class="actions"><button class="btn" data-unblock="${def.id}">Unblock and allow a retry</button></div>`);
@@ -517,6 +531,19 @@ document.addEventListener('click', async (ev) => {
     await act(`check:${d.check}`, () => post(`/api/gates/${d.check}/check`));
   } else if (d.cancel) {
     await act('cancel', () => post(`/api/runs/${d.cancel}/cancel`));
+  } else if (d.reopen) {
+    const reason = ui.drafts.feedback[`reopen:${d.from}`] ?? '';
+    if (!reason.trim()) {
+      ui.errors[`reopen:${d.from}`] = 'Write what must change before sending the work back.';
+      render();
+      return;
+    }
+    const ok = await act(`reopen:${d.from}`, () => post(`/api/stages/${d.reopen}/reopen`, { reason }));
+    if (ok) {
+      delete ui.drafts.feedback[`reopen:${d.from}`];
+      ui.selected = d.reopen;
+      render();
+    }
   } else if (d.unblock) {
     await act(`unblock:${d.unblock}`, () => post(`/api/stages/${d.unblock}/unblock`));
   } else if (d.decide) {

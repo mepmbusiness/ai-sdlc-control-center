@@ -4,7 +4,7 @@ A local control center for a multi-agent product development workflow, from a ra
 
 The Control Center is the **control layer**. The AI CLIs you already pay for (Claude Code and Codex) are the **execution layer**. The product's Git repository is the **source of truth**.
 
-> **Status: v0.3.** Everything from the idea to Design QA runs with real models: *Idea → Discovery → PRD → Design → Tech design* (Claude writes, Codex cross-checks, a human approves each), then the engineering loop *Implementation (Codex) → Code review → Engineering QA → Design QA* (Claude Code checks), where any FAIL sends actionable blockers back to the engineer. Product review, the final gate and Ship arrive next. See [Roadmap](#roadmap).
+> **Status: v0.4, end to end.** The whole workflow runs with real models, from the idea to a tagged release: *Idea → Discovery → PRD → Design → Tech design* (Claude writes, Codex cross-checks, a human approves each), then *Implementation (Codex) → Code review → Engineering QA → Design QA* (Claude Code checks, any FAIL goes back to the engineer), then *Product review (Claude) → final human approval → Ship*. See [Roadmap](#roadmap).
 
 ---
 
@@ -194,6 +194,12 @@ sequenceDiagram
 - **A broken checker does not bounce work.** If a checker crashes, returns a malformed report, or says FAIL without actionable blockers, the checker stage fails in place and the engineer is not called.
 - **Loops are bounded.** Three consecutive FAIL verdicts from the same checker block it until a human steps in.
 
+## Closing the loop
+
+- **Product review** reads the whole trail (discovery, PRD, design, specs and every review) and answers one question: did we build the right product? Its report is kept even when it blocks.
+- **When it blocks, the human chooses where the work goes back.** Any earlier agent stage can be reopened with a reason, and that reason reaches the agent's next prompt. Choosing the stage is a product decision, so it is not automated.
+- **Final approval** creates a checkpoint commit and an annotated Git tag `ready-to-ship-<timestamp>` in the product repository, and the Ship stage is marked done. Nothing is pushed or deployed.
+
 ## Execution safety
 
 | Rule | How it is enforced |
@@ -251,12 +257,11 @@ It copies the current contracts, schemas and workflow definition into the produc
 npm test
 ```
 
-44 tests: engine rules (gates, rejection, routing, failure limits, restarts), CLI adapter flags (isolation and no auto-approval) and end-to-end HTTP scenarios using fake CLIs (`scripts/fake-cli.mjs`), so the suite never spends subscription quota.
+47 tests: engine rules (gates, rejection, routing, failure limits, restarts), CLI adapter flags (isolation and no auto-approval) and end-to-end HTTP scenarios using fake CLIs (`scripts/fake-cli.mjs`), so the suite never spends subscription quota.
 
 ## Known limitations
 
 - **One product at a time.** The data layout already supports more.
-- **Product review, Final approval and Ship are not runnable yet.** They are defined but disabled.
 - **No network for the engineer.** Codex cannot install packages; products should use Node.js built-ins (the Tech Lead contract steers toward this). A dependency install step with human confirmation is planned.
 - **Design QA reads code, not pixels.** It compares templates, styles and copy with the design and lists what only a human can confirm visually. Screenshot comparison needs a headless browser (Playwright), which is not installed by default.
 - **QA reasons from code and test results.** QA cannot execute its own experiments in v0.3; it judges the suite and reads the code adversarially.
@@ -283,7 +288,8 @@ npm test
 
 - **v0.2 (done):** Product definition, Product design (design spec, design system and HTML prototype) and Tech design, each with its gate and Codex check.
 - **v0.3 (done):** Implementation (Codex, sandboxed write access), Code review, Engineering QA and Design QA loops with automatic return to the engineer.
-- **v0.4:** Product review, final gate, ship.
+- **v0.4 (done):** Product review, reopen with a reason, final gate, release tag.
+- **Next:** dependency installs confirmed by a human, visual Design QA with screenshots.
 - **V2:** automatic routing from the handoff record (PASS → `next`, FAIL → `returnTo`), multiple products, alternative models per role, judge-versus-human agreement metrics, cost and quota tracking, Figma as the visual source of truth on a paid seat.
 
 ## Author

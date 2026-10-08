@@ -32,6 +32,7 @@ export interface StageDef {
   timeoutMinutes?: number;
   writeAccess?: boolean; // the stage's agent edits code directly, in a sandbox
   diff?: 'since-last-review' | 'since-baseline'; // what a checker is shown
+  verdict?: boolean; // the stage's report is kept even on FAIL (it explains the FAIL)
 }
 
 export interface AgentDef {
@@ -126,6 +127,7 @@ function emptyStage(status: Status): StageState {
 // Status a stage gets when the workflow arrives at it.
 function arrivalStatus(def: StageDef): Status {
   if (def.kind === 'gate') return 'APPROVAL_REQUIRED';
+  if (def.kind === 'end') return 'PASS';
   if (def.kind === 'agent' && def.enabled) return 'READY';
   return 'WAITING';
 }
@@ -345,6 +347,7 @@ export function decideGate(
   if (decision === 'APPROVED') {
     const target = stageDef(wf, def.next!);
     next.stages[target.id].status = arrivalStatus(target);
+    if (target.kind === 'end') next.stages[target.id].completedAt = now;
     next.currentStage = target.id;
   } else {
     reviewed.status = 'READY';
@@ -392,6 +395,28 @@ export function reconcile(state: WorkflowState, wf: Workflow, now: string): Work
   if (next.stages[cur.id].status === 'WAITING' && !next.activeRun) {
     next.stages[cur.id].status = arrivalStatus(cur);
   }
+  next.updatedAt = now;
+  return next;
+}
+
+// A human sends the workflow back to an earlier agent stage, for example when
+// the product review blocks a release. Later stages keep their history and are
+// re-entered in order as the workflow moves forward again.
+export function reopen(state: WorkflowState, wf: Workflow, stageId: string, reason: string, now: string): WorkflowState {
+  const def = stageDef(wf, stageId);
+  if (def.kind !== 'agent' || !def.enabled) throw new EngineError('not_reopenable', `"${def.label}" cannot be reopened.`);
+  if (state.activeRun) throw new EngineError('busy', `Wait for ${state.activeRun.agent} to finish.`);
+  const order = wf.stages.map((s) => s.id);
+  if (order.indexOf(stageId) >= order.indexOf(state.currentStage)) {
+    throw new EngineError('not_earlier', `"${def.label}" is not before the current stage.`);
+  }
+  if (!reason.trim()) throw new EngineError('feedback_required', 'Say why the work goes back, so the agent can act on it.');
+  const next = structuredClone(state);
+  const st = next.stages[stageId];
+  st.status = 'READY';
+  st.consecutiveFailures = 0;
+  st.blockers = [`Reopened by a human: ${reason.trim()}`];
+  next.currentStage = stageId;
   next.updatedAt = now;
   return next;
 }

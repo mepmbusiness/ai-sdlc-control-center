@@ -211,6 +211,7 @@
         "product/prd.md",
         "design/design-spec.md",
         "engineering/tech-spec.md",
+        "engineering/implementation-notes.md",
         "engineering/code-review.md",
         "engineering/qa-report.md",
         "design/design-qa.md"
@@ -219,7 +220,8 @@
         "product/product-review.md"
       ],
       "next": "final-approval",
-      "enabled": false
+      "enabled": true,
+      "verdict": true
     },
     {
       "id": "final-approval",
@@ -227,14 +229,14 @@
       "kind": "gate",
       "reviews": "product-review",
       "next": "ship",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "ship",
       "label": "Ship",
       "kind": "end",
       "owner": "human",
-      "enabled": false
+      "enabled": true
     }
   ],
   "agents": {
@@ -289,5 +291,5 @@
       "tool": "Claude"
     }
   },
-  "version": "0.3"
+  "version": "0.4"
 }

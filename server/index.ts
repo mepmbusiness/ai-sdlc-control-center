@@ -165,9 +165,14 @@ async function decide(gateId: string, body: Record<string, unknown>) {
         `Approve ${reviewed.label}\n\nA human approved ${reviewed.outputs!.join(', ')} ` +
           `(run ${record.artifactRunId}), unlocking ${next.label}. Checkpoint so later reviews diff against an approved baseline.`,
       );
+      let tag: string | null = null;
+      if (next.kind === 'end' && commit) {
+        tag = `ready-to-ship-${ts.slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}`;
+        await store.git(ws, 'tag', '-a', tag, '-m', `Approved for release by a human at ${ts}`);
+      }
       await store.appendActivity(ws, {
         ts: now(), actor: 'system', event: 'checkpoint_commit', stage: gateId,
-        message: commit ? `Checkpoint commit ${commit}` : 'Nothing new to commit',
+        message: commit ? `Checkpoint commit ${commit}${tag ? `, tagged ${tag}` : ''}` : 'Nothing new to commit',
       });
     }
     return { state, commit };
@@ -249,6 +254,23 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
         const next = engine.unblock(await store.loadState(ws), wf, m![1], now());
         await store.saveState(ws, next);
         await store.appendActivity(ws, { ts: now(), actor: 'human', event: 'stage_unblocked', stage: m![1], message: `Human unblocked ${engine.stageDef(wf, m![1]).label}` });
+        return next;
+      });
+      return send(res, 200, { state });
+    }
+    m = p.match(/^\/api\/stages\/([\w-]+)\/reopen$/);
+    if (m) {
+      const ws = requireWorkspace();
+      const reason = String(body.reason ?? '');
+      const state = await store.withLock(async () => {
+        const wf = await store.loadWorkflow(ws);
+        const prev = await store.loadState(ws);
+        const next = engine.reopen(prev, wf, m![1], reason, now());
+        await store.saveState(ws, next);
+        await store.appendActivity(ws, {
+          ts: now(), actor: 'human', event: 'stage_reopened', stage: m![1], feedback: reason.trim(),
+          message: `Human sent the work back to ${engine.stageDef(wf, m![1]).label} from ${engine.stageDef(wf, prev.currentStage).label}: "${reason.trim()}"`,
+        });
         return next;
       });
       return send(res, 200, { state });

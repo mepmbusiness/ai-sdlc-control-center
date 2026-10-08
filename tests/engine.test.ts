@@ -12,6 +12,7 @@ import {
   unblock,
   interruptActiveRun,
   reconcile,
+  reopen,
   EngineError,
   type Workflow,
 } from '../server/engine.ts';
@@ -143,7 +144,8 @@ test('a run interrupted by a server restart is closed as a failure', () => {
 });
 
 test('disabled stages explain why they cannot run', () => {
-  const reasons = runBlockers(fresh(), wf, 'product-review');
+  const partial: Workflow = { ...wf, stages: wf.stages.map((d) => (d.id === 'discovery' ? { ...d, enabled: false } : d)) };
+  const reasons = runBlockers(initialState(partial, { name: 'Demo', slug: 'demo' }, T), partial, 'discovery');
   assert.ok(reasons.some((r) => r.includes('not available')));
 });
 
@@ -185,4 +187,16 @@ test('the fix loop goes back through code review, then QA, then design QA', () =
   s = completeRun(s, all, 'cr2', { status: 'PASS', summary: null, blockers: [] }, T);
   assert.equal(s.currentStage, 'engineering-qa');
   assert.equal(s.stages['engineering-qa'].status, 'READY');
+});
+
+test('reopen sends work back to an earlier agent stage with the human reason', () => {
+  let s = startRun(fresh(), wf, 'discovery', 'r1', T);
+  s = completeRun(s, wf, 'r1', { status: 'PASS', summary: null, blockers: [] }, T);
+  s = decideGate(s, wf, 'discovery-approval', 'APPROVED', null, T);
+  throwsCode(() => reopen(s, wf, 'discovery', '', T), 'feedback_required');
+  throwsCode(() => reopen(s, wf, 'tech-design', 'x', T), 'not_earlier');
+  s = reopen(s, wf, 'discovery', 'Missing a competitor', T);
+  assert.equal(s.currentStage, 'discovery');
+  assert.equal(s.stages.discovery.status, 'READY');
+  assert.deepEqual(s.stages.discovery.blockers, ['Reopened by a human: Missing a competitor']);
 });

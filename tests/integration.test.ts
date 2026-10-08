@@ -326,6 +326,8 @@ test('the engineer cannot pass with a failing test suite: the Control Center run
 test('a passing implementation writes notes and opens code review', async () => {
   const st = await run('implementation');
   assert.equal(st.status, 'PASS', st.blockers.join('; '));
+  // Regression: the previous attempt's blockers must reach the next prompt.
+  assert.match(await promptOf('implementation'), /## Blockers from your previous attempt[\s\S]*Test suite passes/);
   const notes = readFileSync(path.join(ws(), 'engineering/implementation-notes.md'), 'utf8');
   assert.match(notes, /Test suite \(run by the Control Center in a sandbox\): Test suite passed/);
   assert.match(notes, /src\/app\.js/);
@@ -388,4 +390,35 @@ test('a QA FAIL goes back through the engineer and code review before QA runs ag
   const s = await state();
   assert.equal(s.currentStage, 'product-review');
   assert.equal(gitCount(), 5, 'the engineering loop never commits');
+});
+
+test('a blocked product review keeps its report and lets the human choose where work goes back', async () => {
+  modes({ claude: 'verdict-fail' });
+  const pr = await run('product-review');
+  modes({});
+  assert.equal(pr.status, 'FAIL');
+  assert.ok(existsSync(path.join(ws(), 'product/product-review.md')), 'the blocking report is kept');
+  assert.equal((await post('/api/stages/product-definition/reopen', { reason: ' ' })).body.code, 'feedback_required');
+  assert.equal((await post('/api/stages/product-review/reopen', { reason: 'x' })).body.code, 'not_earlier');
+  const r = await post('/api/stages/product-definition/reopen', { reason: 'Success metric M2 cannot be measured.' });
+  assert.equal(r.status, 200);
+  assert.equal((await state()).currentStage, 'product-definition');
+  await runToGate('product-definition', 'prd-approval');
+  assert.match(await promptOf('product-definition'), /Reopened by a human: Success metric M2 cannot be measured\./);
+});
+
+test('after the full loop, final approval ships and tags the release', async () => {
+  for (const [stage, gate] of [['product-definition', 'prd-approval'], ['product-design', 'design-approval'], ['tech-design', 'tech-approval']]) {
+    if ((await state()).stages[gate].status !== 'APPROVAL_REQUIRED') await runToGate(stage, gate);
+    await post(`/api/gates/${gate}/decision`, { decision: 'APPROVED' });
+  }
+  for (const stage of ['implementation', 'code-review', 'engineering-qa', 'design-qa', 'product-review']) await passes(stage);
+  assert.equal((await state()).stages['final-approval'].status, 'APPROVAL_REQUIRED');
+  const r = await post('/api/gates/final-approval/decision', { decision: 'APPROVED' });
+  assert.equal(r.status, 200);
+  const s = await state();
+  assert.equal(s.currentStage, 'ship');
+  assert.equal(s.stages.ship.status, 'PASS');
+  const tags = execFileSync('git', ['tag'], { cwd: ws() }).toString();
+  assert.match(tags, /^ready-to-ship-\d{8}-\d{4}$/m);
 });
