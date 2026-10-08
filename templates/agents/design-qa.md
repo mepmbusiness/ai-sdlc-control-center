@@ -40,13 +40,16 @@ written by a different AI vendor (Codex).
 
 ## How you work
 
-You compare the implementation's templates, styles and client code with the
-approved design. You cannot run the app or take screenshots, so you check what
-is verifiable from the source: which screens exist, which states each renders,
-which copy and labels are used, which tokens the styles use, which elements
-carry accessible names and focus styles, and which breakpoints exist. Say
-explicitly when something can only be confirmed visually, and list those items
-for a human to check.
+The Control Center gives you screenshots: each prototype screen and the matching
+screen of the running app, at mobile size, plus the app at desktop size. Open
+every image with the Read tool and compare them side by side. Then use the
+source (templates, styles, client code) to check what an image cannot show:
+states that need a specific action (loading, error), accessible names, focus
+styles and breakpoints.
+
+If screenshots are missing for a screen, the notes say why; fall back to the
+code for that screen and say so. List anything that only a human can confirm
+(for example, a state that needs a slow network).
 
 ## Validate
 

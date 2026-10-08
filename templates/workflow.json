@@ -199,7 +199,8 @@
       "next": "product-review",
       "returnTo": "implementation",
       "enabled": true,
-      "diff": "since-baseline"
+      "diff": "since-baseline",
+      "screenshots": true
     },
     {
       "id": "product-review",

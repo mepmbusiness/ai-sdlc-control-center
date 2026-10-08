@@ -338,6 +338,15 @@ function agentControls(def, st) {
       .map((c) => `<li class="${c.ok ? 'ok' : 'no'}"><span class="mark">${c.ok ? '✓' : '✕'}</span><span>${esc(c.name)}${c.detail ? ` <small>${esc(c.detail)}</small>` : ''}</span></li>`)
       .join('')}</ul>`);
   }
+  if (handoff?.screenshots?.length) {
+    out.push(`<div class="section-title">Screenshots (prototype vs. app)</div><div class="shots">${handoff.screenshots
+      .map((rel) => {
+        const name = rel.split('/').pop().replace('.png', '');
+        const src = `/api/image?path=${encodeURIComponent(rel)}`;
+        return `<a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt="${esc(name)}" loading="lazy"><span>${esc(name)}</span></a>`;
+      })
+      .join('')}</div>`);
+  }
   if (!def.enabled) return out.join('');
 
   const running = state.activeRun?.stageId === def.id;

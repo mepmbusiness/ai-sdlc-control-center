@@ -90,6 +90,19 @@ export async function restoreProtected(ws: string, before: Map<string, Buffer>):
   return violations;
 }
 
+// ---------- process groups ----------
+
+// Sandboxed commands run as codex sandbox -> sh -> the real process. Killing
+// only the top process would orphan the rest, so each command gets its own
+// process group and the whole group is stopped.
+export function killGroup(child: { pid?: number; kill: (s?: NodeJS.Signals) => boolean }) {
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    child.kill('SIGTERM');
+  }
+}
+
 // ---------- sandboxed tests ----------
 
 export interface TestResult {
@@ -117,14 +130,15 @@ export async function runTests(ws: string, onSpawn?: (kill: () => void) => void)
     const child = spawn(BINARIES.codex, ['sandbox', '-c', 'sandbox_mode="workspace-write"', 'sh', '-c', script!], {
       cwd: ws,
       env: { ...childEnv(), CI: '1', NO_COLOR: '1' },
+      detached: true,
     });
     let output = '';
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      killGroup(child);
     }, TEST_TIMEOUT_MS);
-    onSpawn?.(() => child.kill('SIGTERM'));
+    onSpawn?.(() => killGroup(child));
     child.stdout.on('data', (d) => (output += d));
     child.stderr.on('data', (d) => (output += d));
     child.on('error', (e) => (output += `\n${e.message}`));

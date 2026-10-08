@@ -62,6 +62,19 @@ criteria and match the approved design.
 - After you finish, the Control Center runs `npm test` itself, in the same kind
   of sandbox. If it fails, your run fails, whatever you report.
 
+## So Design QA can see the product
+
+Design QA takes screenshots of every screen and compares them with the approved
+prototype. Make that possible:
+
+- If the app needs a server, `npm start` must start it listening on
+  `127.0.0.1` and the port in the `PORT` environment variable. If it is a static
+  page, put it at `public/index.html` and do not define `start`.
+- Return `screens`: one entry per screen ID in the design's screen inventory,
+  with the URL path that shows it (for example `{"id": "S3", "path": "/book"}`).
+  Screens that need sign-in or data should still have a path; seed demo data on
+  start in development if the plan allows it.
+
 ## On a fix run
 
 If this prompt includes blockers or reports from a reviewer, QA or Design QA,
@@ -83,7 +96,7 @@ you changed. Do not refactor unrelated code during a fix.
 
 Write the code in the workspace. Then return the structured response:
 `status`, `summary`, `tasks_completed`, `tasks_remaining`, `files_changed`,
-`how_to_run`, `fixes`, `notes_for_reviewers` and `blockers`.
+`how_to_run`, `fixes`, `screens`, `notes_for_reviewers` and `blockers`.
 
 ## Quality gate
 

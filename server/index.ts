@@ -211,6 +211,16 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       if (content === null) throw new HttpError(404, `${rel} does not exist yet.`);
       return send(res, 200, { path: rel, content });
     }
+    if (p === '/api/image') {
+      const rel = url.searchParams.get('path') ?? '';
+      // Only screenshots taken by the Control Center are served as images.
+      if (!/^workflow\/runs\/[\w-]+\/screens\/[\w.-]+\.png$/.test(rel)) throw new HttpError(400, 'Not a screenshot path.');
+      const file = store.safeJoin(requireWorkspace(), rel);
+      if (!existsSync(file)) throw new HttpError(404, 'Screenshot not found.');
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+      res.end(await fs.readFile(file));
+      return;
+    }
     if (p === '/api/preflight') {
       const ws = requireWorkspace();
       const purpose = url.searchParams.get('purpose') === 'check' ? 'check' : 'produce';

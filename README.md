@@ -45,7 +45,7 @@ flowchart TB
 | Persistence | Plain JSON and Markdown files in the product repo | `server/store.ts` |
 | Definitions | Workflow graph, agent contracts, JSON schemas | `templates/` |
 
-There is no database, no cloud backend, no agent framework and no build step. Two runtime dependencies: `marked` (render Markdown) and `yaml` (read contract headers).
+There is no database, no cloud backend, no agent framework and no build step. Three runtime dependencies: `marked` (render Markdown), `yaml` (read contract headers) and `playwright` (screenshots for Design QA).
 
 ### Tool vs. product
 
@@ -193,6 +193,7 @@ sequenceDiagram
 - **Fixes always go back through review.** QA FAIL → engineer → code review (fix only) → QA. Design QA FAIL → engineer → code review → QA → Design QA.
 - **A broken checker does not bounce work.** If a checker crashes, returns a malformed report, or says FAIL without actionable blockers, the checker stage fails in place and the engineer is not called.
 - **Loops are bounded.** Three consecutive FAIL verdicts from the same checker block it until a human steps in.
+- **Design QA compares pixels.** The engineer declares the URL path of every screen in the design's inventory. The Control Center serves the prototype and the app (static files directly, or `npm start` in the sandbox), takes screenshots with headless Chromium (prototype and app on mobile, app on desktop, up to 8 screens), and gives them to Claude Code, which opens each image. The page may only reach `localhost`; every other request is blocked. Screenshots appear as thumbnails in the stage detail.
 - **Packages are installed by a human, not by the agent.** The engineer never has network access. When it needs a package it declares it in `package.json` and stops; the Control Center lists it and a human clicks **Install**. The install uses only the public npm registry, with lifecycle scripts disabled (`--ignore-scripts`), and refuses git, file or URL specs and any `.npmrc` in the product. A successful install resets the engineer's failure streak, since the environment changed.
 
 ## Closing the loop
@@ -224,6 +225,7 @@ sequenceDiagram
 - Git
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) signed in with a Claude subscription: run `claude` once and log in
 - [Codex CLI](https://github.com/openai/codex) signed in with ChatGPT: `codex login`
+- For visual Design QA, a headless Chromium for Playwright (about 200 MB, stored in the Playwright cache, not in the project): `npx playwright install --only-shell chromium`. Without it, Design QA falls back to reading the code.
 
 ### Run
 
@@ -263,7 +265,8 @@ npm test
 ## Known limitations
 
 - **One product at a time.** The data layout already supports more.
-- **Design QA reads code, not pixels.** It compares templates, styles and copy with the design and lists what only a human can confirm visually. Screenshot comparison needs a headless browser (Playwright), which is not installed by default.
+- **Server apps get network during screenshots.** The Codex sandbox has no localhost-only mode, so an app that needs `npm start` runs with network enabled for the capture (at most 2 minutes, writes still confined, only after code review and QA passed). The browser itself blocks every non-local request. Static apps are served by the Control Center and run no agent code server-side.
+- **Design QA sees each screen's default state.** Loading and error states that need a specific action are checked from the code, and listed for a human when they cannot be confirmed.
 - **QA reasons from code and test results.** QA cannot execute its own experiments in v0.3; it judges the suite and reads the code adversarially.
 - **One engineer run implements the whole plan.** Large plans can take a long time; per-task runs are planned.
 - **Long single-shot outputs.** The designer writes three files, including a full HTML prototype, in one structured response; this takes several minutes with no intermediate progress in the live log.
@@ -290,7 +293,7 @@ npm test
 - **v0.3 (done):** Implementation (Codex, sandboxed write access), Code review, Engineering QA and Design QA loops with automatic return to the engineer.
 - **v0.4 (done):** Product review, reopen with a reason, final gate, release tag.
 - **Packages (done):** dependency installs confirmed by a human.
-- **Next:** visual Design QA with screenshots.
+- **Visual Design QA (done):** screenshots of the prototype and the running app.
 - **V2:** automatic routing from the handoff record (PASS → `next`, FAIL → `returnTo`), multiple products, alternative models per role, judge-versus-human agreement metrics, cost and quota tracking, Figma as the visual source of truth on a paid seat.
 
 ## Author

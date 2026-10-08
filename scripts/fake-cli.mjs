@@ -102,6 +102,7 @@ process.stdin.on('end', async () => {
     };
     const deps = mode === 'needs-dep' ? { 'left-pad': '^1.3.0' } : mode === 'bad-dep' ? { evil: 'git+https://example.com/evil.git' } : undefined;
     put('package.json', JSON.stringify({ type: 'module', scripts: { test: 'node --test' }, ...(deps ? { dependencies: deps } : {}) }));
+    put('public/index.html', '<!doctype html><html><body><main data-app="S1">Fake app</main></body></html>');
     put('src/app.js', `export const add = (a, b) => a + b;\n// fix run: ${prompt.includes("(fix these)")} at ${Date.now()}\n`);
     put('test/app.test.js', `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { add } from '../src/app.js';\ntest('adds', () => assert.equal(add(1, 2), ${mode === 'break-tests' ? 4 : 3}));\n`);
     if (mode === 'tamper') put('product/prd.md', '# PRD rewritten by the engineer\n');
@@ -111,6 +112,7 @@ process.stdin.on('end', async () => {
       status: needs ? 'FAIL' : 'PASS', summary: fixing ? 'Fixed the reported blockers.' : 'Implemented all tasks.',
       tasks_completed: ['T-1'], tasks_remaining: [], files_changed: ['src/app.js', 'test/app.test.js', 'package.json'],
       how_to_run: 'node src/app.js', fixes: fixing ? [{ blocker: 'reported blocker', resolution: 'fixed' }] : [],
+      screens: [{ id: 'S1', path: '/' }],
       notes_for_reviewers: 'Small app.', blockers: needs ? [`Needs package install: ${Object.keys(deps)[0]}`] : [],
     }));
     console.log(JSON.stringify({ type: 'thread.started' }));

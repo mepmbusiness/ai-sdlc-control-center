@@ -10,6 +10,7 @@ import type { Workflow, WorkflowState, StageDef } from './engine.ts';
 import * as store from './store.ts';
 import { cliStatus, spawnCli, extractClaudeResult, describeEvent, strippedKeysPresent } from './clis.ts';
 import * as wsx from './workspace.ts';
+import { captureScreens, type Screen } from './screens.ts';
 
 const RUN_TIMEOUT_MS = { produce: 20 * 60_000, check: 10 * 60_000 };
 const children = new Map<string, ChildProcess>();
@@ -409,6 +410,22 @@ async function execute(
       `## Test suite result (run by the Control Center in a sandbox)\n\nCommand: \`${ctx.tests.command ?? 'none'}\`\n\n${ctx.tests.summary}\n\n\`\`\`\n${ctx.tests.output.slice(-6000)}\n\`\`\``,
     );
     if (fixReview) extras.push(`## Your previous review\n\n${await inputsSection(ws, def.outputs ?? [])}`);
+    if (def.screenshots) {
+      const engineer = wf.stages.find((s) => s.writeAccess);
+      const lastRun = engineer ? state.stages[engineer.id].lastRunId : null;
+      const handoff = lastRun ? await store.readJson<{ screens?: Screen[] }>(ws, `workflow/runs/${lastRun}/handoff.json`) : null;
+      const screens = handoff?.screens?.length ? handoff.screens : [{ id: 'home', path: '/' }];
+      await log(`Taking screenshots of ${screens.length} screens`);
+      const prototype = (def.inputs ?? []).find((i) => i.endsWith('.html')) ?? null;
+      const cap = await captureScreens(ws, runDir, screens, prototype);
+      ctx.screens = cap.images.map((i) => i.rel);
+      await log(`${cap.images.length} screenshots taken`);
+      extras.push(
+        `## Screenshots (taken by the Control Center)\n\nOpen each file with the Read tool.\n\n` +
+          (cap.images.length ? cap.images.map((i) => `- ${i.label}: \`${i.rel}\``).join('\n') : '_None._') +
+          (cap.notes.length ? `\n\nNotes:\n${cap.notes.map((n) => `- ${n}`).join('\n')}` : ''),
+      );
+    }
   }
 
   const prompt = await producerPrompt(ws, wf, state, def, contract, extras);
@@ -445,7 +462,7 @@ async function execute(
     // Protected files are restored even when the run failed or was cancelled.
     const violations = await wsx.restoreProtected(ws, ctx.protectedBefore!);
     if (violations.length) await log(`Reverted changes to protected files: ${violations.join(', ')}`);
-    const result = await engineerResult(ws, def, runId, parsed, violations, ctx.treeBefore!, log);
+    const result = await engineerResult(ws, def, runId, parsed, violations, ctx.treeBefore!, log, ctx.treeBefore === trees.baseline);
     return store.withLock(() => finishRun(ws, wf, def, runId, startedAt, result));
   }
   const result = mode === 'checker' ? await checkerResult(ws, def, runId, parsed, contract, ctx) : await documentResult(ws, def, runId, parsed, contract);
@@ -453,7 +470,7 @@ async function execute(
 }
 
 interface EngineerCtx { treeBefore?: string; protectedBefore?: Map<string, Buffer> }
-interface CheckerCtx { tests?: wsx.TestResult; reviewedTree?: string }
+interface CheckerCtx { tests?: wsx.TestResult; reviewedTree?: string; screens?: string[] }
 interface StageResult {
   status: 'PASS' | 'FAIL';
   summary: string | null;
@@ -513,7 +530,7 @@ async function checkerResult(ws: string, def: StageDef, runId: string, parsed: P
     const trees = (await store.readJson<Trees>(ws, TREES)) ?? {};
     await store.writeJson(ws, TREES, { ...trees, lastReviewed: ctx.reviewedTree });
   }
-  return { status, summary: out.summary, blockers, checks: [...checks, testCheck], outputs, error: false, extra: { reviewedTree: ctx.reviewedTree } };
+  return { status, summary: out.summary, blockers, checks: [...checks, testCheck], outputs, error: false, extra: { reviewedTree: ctx.reviewedTree, ...(ctx.screens ? { screenshots: ctx.screens } : {}) } };
 }
 
 interface Implementation {
@@ -525,6 +542,7 @@ interface Implementation {
   how_to_run: string;
   fixes: { blocker: string; resolution: string }[];
   notes_for_reviewers: string;
+  screens: Screen[];
   blockers: string[];
 }
 
@@ -544,6 +562,7 @@ export function renderNotes(runId: string, impl: Implementation, tests: wsx.Test
     '## Fixes in this run', '',
     impl.fixes.length ? impl.fixes.map((f) => `- **${f.blocker}**\n  ${f.resolution}`).join('\n') : '_Not a fix run._', '',
     '## Files changed (measured by the Control Center)', '', list(changed), '',
+    '## Screens', '', (impl.screens ?? []).length ? impl.screens.map((x) => `- ${x.id}: \`${x.path}\``).join('\n') : '_None declared._', '',
     '## Notes for reviewers', '', impl.notes_for_reviewers || '_None._', '',
     ...(violations.length ? ['## Reverted changes to protected files', '', list(violations), ''] : []),
     '## Blockers', '', list(impl.blockers), '',
@@ -558,6 +577,7 @@ async function engineerResult(
   violations: string[],
   treeBefore: string,
   log: (m: string) => Promise<void>,
+  firstRun: boolean,
 ): Promise<StageResult> {
   const protectedCheck = {
     name: 'Files owned by other roles left untouched',
@@ -579,7 +599,9 @@ async function engineerResult(
     protectedCheck,
     { name: 'Test suite passes (sandboxed run by the Control Center)', ok: tests.ok, detail: tests.summary },
     { name: 'Every planned task done', ok: impl.tasks_remaining.length === 0, detail: impl.tasks_remaining.join(', ') },
-    { name: 'Code changed', ok: changed.length > 0, detail: `${changed.length} files` },
+    // A first implementation must produce code. On later runs "nothing to change"
+    // can be the right answer; the checkers that run next decide whether it is.
+    { name: 'Code changed', ok: changed.length > 0 || !firstRun, detail: `${changed.length} files${!changed.length && !firstRun ? ' (no change needed, per the engineer; checkers will verify)' : ''}` },
   ];
   const failed = checks.filter((c) => !c.ok).map((c) => `Check failed: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
   const status = impl.status === 'PASS' && failed.length === 0 ? 'PASS' : 'FAIL';
@@ -592,7 +614,7 @@ async function engineerResult(
     checks,
     outputs: [notes, `workflow/runs/${runId}/tests.log`],
     error: false,
-    extra: { treeBefore, treeAfter, filesChanged: changed },
+    extra: { treeBefore, treeAfter, filesChanged: changed, screens: impl.screens ?? [] },
   };
 }
 

@@ -33,6 +33,7 @@ export interface StageDef {
   writeAccess?: boolean; // the stage's agent edits code directly, in a sandbox
   diff?: 'since-last-review' | 'since-baseline'; // what a checker is shown
   verdict?: boolean; // the stage's report is kept even on FAIL (it explains the FAIL)
+  screenshots?: boolean; // the checker receives screenshots of the prototype and the running app
 }
 
 export interface AgentDef {

@@ -428,6 +428,14 @@ test('a QA FAIL goes back through the engineer and code review before QA runs ag
   await passes('engineering-qa');
   assert.match(await promptOf('engineering-qa'), /the whole implementation/, 'QA always sees everything');
   await passes('design-qa');
+  const dq = await promptOf('design-qa');
+  assert.match(dq, /Prototype S1, mobile: `workflow\/runs\/[\w-]+\/screens\/prototype-S1-mobile\.png`/);
+  assert.match(dq, /App S1 \(\/\), desktop/);
+  assert.match(dq, /Static app served from public\//);
+  const shot = dq.match(/`(workflow\/runs\/[\w-]+\/screens\/app-S1-mobile\.png)`/)![1];
+  const img = await fetch(`${BASE}/api/image?path=${encodeURIComponent(shot)}`);
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  assert.equal((await fetch(`${BASE}/api/image?path=product/prd.md`)).status, 400, 'only screenshots are served as images');
   const s = await state();
   assert.equal(s.currentStage, 'product-review');
   assert.equal(gitCount(), 5, 'the engineering loop never commits');
