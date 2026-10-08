@@ -2,6 +2,8 @@
   "name": "ai-sdlc-control-center",
   "version": "0.1.0",
   "description": "Local control center for a human-gated, multi-agent product development workflow driven by the Claude Code and Codex CLIs.",
+  "author": "Maria Eduarda Pereira Martins (https://mariaeduardamartins.com)",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "engines": {

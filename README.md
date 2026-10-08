@@ -285,3 +285,7 @@ npm test
 - **v0.3 (done):** Implementation (Codex, sandboxed write access), Code review, Engineering QA and Design QA loops with automatic return to the engineer.
 - **v0.4:** Product review, final gate, ship.
 - **V2:** automatic routing from the handoff record (PASS → `next`, FAIL → `returnTo`), multiple products, alternative models per role, judge-versus-human agreement metrics, cost and quota tracking, Figma as the visual source of truth on a paid seat.
+
+## Author
+
+Built by [Maria Eduarda Martins](https://mariaeduardamartins.com), AI Product Manager. Released under the [MIT License](LICENSE).
