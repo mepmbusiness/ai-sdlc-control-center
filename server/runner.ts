@@ -71,6 +71,21 @@ export async function preflight(ws: string, wf: Workflow, state: WorkflowState, 
     }
   }
 
+  if (purpose === 'produce' && (def.writeAccess || def.returnTo)) {
+    const deps = await wsx.dependencyStatus(ws);
+    const names = deps.missing.map((d) => d.name).join(', ');
+    items.push({
+      label: 'Declared packages installed',
+      // The engineer may be the one adding them; checkers need them for the tests.
+      ok: def.writeAccess ? true : !deps.missing.length && !deps.refused.length,
+      detail: deps.refused.length
+        ? `Refused: ${deps.refused.join('; ')}`
+        : deps.missing.length
+          ? `Not installed yet: ${names}. Install them from the Implementation stage.`
+          : 'Nothing missing.',
+    });
+  }
+
   const agent = wf.agents[agentId];
   const contractOk = existsSync(store.safeJoin(ws, `agents/${agentId}.md`));
   items.push({ label: `Agent contract agents/${agentId}.md`, ok: contractOk, detail: contractOk ? 'Present' : 'Missing' });

@@ -100,16 +100,18 @@ process.stdin.on('end', async () => {
       mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
       writeFileSync(path.join(cwd, rel), text);
     };
-    put('package.json', JSON.stringify({ type: 'module', scripts: { test: 'node --test' } }));
+    const deps = mode === 'needs-dep' ? { 'left-pad': '^1.3.0' } : mode === 'bad-dep' ? { evil: 'git+https://example.com/evil.git' } : undefined;
+    put('package.json', JSON.stringify({ type: 'module', scripts: { test: 'node --test' }, ...(deps ? { dependencies: deps } : {}) }));
     put('src/app.js', `export const add = (a, b) => a + b;\n// fix run: ${prompt.includes("(fix these)")} at ${Date.now()}\n`);
     put('test/app.test.js', `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { add } from '../src/app.js';\ntest('adds', () => assert.equal(add(1, 2), ${mode === 'break-tests' ? 4 : 3}));\n`);
     if (mode === 'tamper') put('product/prd.md', '# PRD rewritten by the engineer\n');
     const fixing = prompt.includes('(fix these)');
+    const needs = mode === 'needs-dep' || mode === 'bad-dep';
     writeFileSync(out, JSON.stringify({
-      status: 'PASS', summary: fixing ? 'Fixed the reported blockers.' : 'Implemented all tasks.',
+      status: needs ? 'FAIL' : 'PASS', summary: fixing ? 'Fixed the reported blockers.' : 'Implemented all tasks.',
       tasks_completed: ['T-1'], tasks_remaining: [], files_changed: ['src/app.js', 'test/app.test.js', 'package.json'],
       how_to_run: 'node src/app.js', fixes: fixing ? [{ blocker: 'reported blocker', resolution: 'fixed' }] : [],
-      notes_for_reviewers: 'Small app.', blockers: [],
+      notes_for_reviewers: 'Small app.', blockers: needs ? [`Needs package install: ${Object.keys(deps)[0]}`] : [],
     }));
     console.log(JSON.stringify({ type: 'thread.started' }));
     console.log(JSON.stringify({ type: 'item.started', item: { type: 'command_execution', command: 'node --test' } }));

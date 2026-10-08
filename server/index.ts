@@ -8,6 +8,9 @@ import * as engine from './engine.ts';
 import * as store from './store.ts';
 import * as runner from './runner.ts';
 import { cliStatus } from './clis.ts';
+import * as wsx from './workspace.ts';
+
+let installing = false; // a dependency install is in progress
 
 const PORT = Number(process.env.PORT || 4317);
 const HOST = '127.0.0.1';
@@ -118,6 +121,7 @@ async function overview() {
     git,
     clis,
     artifacts: await artifactList(ws, wf, state),
+    dependencies: { ...(await wsx.dependencyStatus(ws)), installing },
   };
 }
 
@@ -232,8 +236,41 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       );
       return send(res, 201, { workspace: path.relative(store.TOOL_ROOT, ws) });
     }
+    if (p === '/api/dependencies/install') {
+      const ws = requireWorkspace();
+      if (installing) throw new HttpError(409, 'An install is already running.');
+      if ((await store.loadState(ws)).activeRun) throw new HttpError(409, 'Wait for the running agent to finish before installing packages.');
+      const deps = await wsx.dependencyStatus(ws);
+      if (deps.refused.length) throw new HttpError(409, `Refused: ${deps.refused.join('; ')}. Fix package.json first.`);
+      if (!deps.missing.length) throw new HttpError(409, 'Every declared package is already installed.');
+      installing = true;
+      const list = deps.missing.map((d) => `${d.name}@${d.range}${d.dev ? ' (dev)' : ''}`);
+      try {
+        await store.appendActivity(ws, { ts: now(), actor: 'human', event: 'dependencies_install_started', message: `Human approved installing ${list.join(', ')}` });
+        const result = await wsx.installDependencies(ws);
+        const logRel = `workflow/installs/${now().replace(/[:.]/g, '-')}.log`;
+        await store.writeText(ws, logRel, result.output);
+        const after = await wsx.dependencyStatus(ws);
+        const ok = result.ok && !after.missing.length;
+        if (ok) {
+          await store.withLock(async () => {
+            const wf = await store.loadWorkflow(ws);
+            await store.saveState(ws, engine.environmentChanged(await store.loadState(ws), wf, now()));
+          });
+        }
+        await store.appendActivity(ws, {
+          ts: now(), actor: 'system', event: 'dependencies_installed', result: ok ? 'PASS' : 'FAIL', outputs: [logRel],
+          blockers: ok ? [] : [`npm install failed; see ${logRel}`],
+          message: ok ? `Installed ${list.join(', ')} (lifecycle scripts disabled)` : 'Package install failed',
+        });
+        return send(res, ok ? 200 : 500, { ok, log: logRel, missing: after.missing });
+      } finally {
+        installing = false;
+      }
+    }
     let m = p.match(/^\/api\/stages\/([\w-]+)\/run$/);
     if (m) {
+      if (installing) throw new HttpError(409, 'Wait for the package install to finish.');
       const ws = requireWorkspace();
       const runId = await store.withLock(() => runner.startProduce(ws, m![1]));
       return send(res, 202, { runId });

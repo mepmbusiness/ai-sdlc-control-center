@@ -193,6 +193,7 @@ sequenceDiagram
 - **Fixes always go back through review.** QA FAIL → engineer → code review (fix only) → QA. Design QA FAIL → engineer → code review → QA → Design QA.
 - **A broken checker does not bounce work.** If a checker crashes, returns a malformed report, or says FAIL without actionable blockers, the checker stage fails in place and the engineer is not called.
 - **Loops are bounded.** Three consecutive FAIL verdicts from the same checker block it until a human steps in.
+- **Packages are installed by a human, not by the agent.** The engineer never has network access. When it needs a package it declares it in `package.json` and stops; the Control Center lists it and a human clicks **Install**. The install uses only the public npm registry, with lifecycle scripts disabled (`--ignore-scripts`), and refuses git, file or URL specs and any `.npmrc` in the product. A successful install resets the engineer's failure streak, since the environment changed.
 
 ## Closing the loop
 
@@ -257,12 +258,11 @@ It copies the current contracts, schemas and workflow definition into the produc
 npm test
 ```
 
-47 tests: engine rules (gates, rejection, routing, failure limits, restarts), CLI adapter flags (isolation and no auto-approval) and end-to-end HTTP scenarios using fake CLIs (`scripts/fake-cli.mjs`), so the suite never spends subscription quota.
+50 tests: engine rules (gates, rejection, routing, failure limits, restarts), CLI adapter flags (isolation and no auto-approval) and end-to-end HTTP scenarios using fake CLIs (`scripts/fake-cli.mjs`), so the suite never spends subscription quota.
 
 ## Known limitations
 
 - **One product at a time.** The data layout already supports more.
-- **No network for the engineer.** Codex cannot install packages; products should use Node.js built-ins (the Tech Lead contract steers toward this). A dependency install step with human confirmation is planned.
 - **Design QA reads code, not pixels.** It compares templates, styles and copy with the design and lists what only a human can confirm visually. Screenshot comparison needs a headless browser (Playwright), which is not installed by default.
 - **QA reasons from code and test results.** QA cannot execute its own experiments in v0.3; it judges the suite and reads the code adversarially.
 - **One engineer run implements the whole plan.** Large plans can take a long time; per-task runs are planned.
@@ -289,7 +289,8 @@ npm test
 - **v0.2 (done):** Product definition, Product design (design spec, design system and HTML prototype) and Tech design, each with its gate and Codex check.
 - **v0.3 (done):** Implementation (Codex, sandboxed write access), Code review, Engineering QA and Design QA loops with automatic return to the engineer.
 - **v0.4 (done):** Product review, reopen with a reason, final gate, release tag.
-- **Next:** dependency installs confirmed by a human, visual Design QA with screenshots.
+- **Packages (done):** dependency installs confirmed by a human.
+- **Next:** visual Design QA with screenshots.
 - **V2:** automatic routing from the handoff record (PASS → `next`, FAIL → `returnTo`), multiple products, alternative models per role, judge-versus-human agreement metrics, cost and quota tracking, Figma as the visual source of truth on a paid seat.
 
 ## Author

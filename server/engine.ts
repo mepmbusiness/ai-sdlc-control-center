@@ -420,3 +420,17 @@ export function reopen(state: WorkflowState, wf: Workflow, stageId: string, reas
   next.updatedAt = now;
   return next;
 }
+
+// A human changed the engineer's environment (for example, installed the
+// packages it asked for). Failures caused by the old environment no longer
+// count toward the block limit.
+export function environmentChanged(state: WorkflowState, wf: Workflow, now: string): WorkflowState {
+  const next = structuredClone(state);
+  for (const def of wf.stages.filter((s) => s.writeAccess)) {
+    const st = next.stages[def.id];
+    st.consecutiveFailures = 0;
+    if (st.status === 'BLOCKED') st.status = 'READY';
+  }
+  next.updatedAt = now;
+  return next;
+}

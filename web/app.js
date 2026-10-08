@@ -229,6 +229,10 @@ function attention() {
   if (!run && cur.status === 'WAITING' && !curDef.enabled) {
     items.push(['ready', 'Next', `${curDef.label} comes next`, 'This stage arrives in the next build of the Control Center. Everything so far is saved in the repository.', curDef.id, 'Open']);
   }
+  if (ui.data.dependencies?.missing?.length && !run) {
+    const impl = workflow.stages.find((s) => s.writeAccess);
+    items.push(['gate', 'Your decision', 'The engineer asked for packages', ui.data.dependencies.missing.map((d) => d.name).join(', '), impl.id, 'Review']);
+  }
   if (curDef.kind === 'end' && cur.status === 'PASS') {
     items.unshift(['ship', 'Ready to ship', 'Approved for release', `Every gate is approved. The release commit is tagged in the product repository (${ui.data.workspace}).`, curDef.id, 'Open']);
   }
@@ -341,6 +345,20 @@ function agentControls(def, st) {
     out.push(`<div class="section-title">Live progress</div><div class="log" data-log="${state.activeRun.runId}">${logLines(ui.logs[state.activeRun.runId])}</div>
       <div class="actions"><button class="btn reject small" data-cancel="${state.activeRun.runId}">Stop this run</button></div>`);
     return out.join('');
+  }
+  const deps = ui.data.dependencies;
+  if (def.writeAccess && deps && (deps.missing.length || deps.refused.length || deps.installing)) {
+    out.push(`<div class="section-title">Packages requested by the engineer</div>`);
+    if (deps.refused.length) {
+      out.push(`<ul class="blockers">${deps.refused.map((r) => `<li>Refused: ${esc(r)}</li>`).join('')}</ul>`);
+    }
+    if (deps.missing.length) {
+      out.push(`<ul class="files">${deps.missing.map((d) => `<li class="mono">${esc(d.name)}@${esc(d.range)}${d.dev ? ' <span class="muted">(dev)</span>' : ''}</li>`).join('')}</ul>
+        <div class="actions"><button class="btn primary" data-install ${deps.installing || state.activeRun || deps.refused.length ? 'disabled' : ''}>
+        ${deps.installing ? 'Installing…' : `Install ${deps.missing.length} package${deps.missing.length > 1 ? 's' : ''}`}</button>
+        <span class="muted" style="font-size:13px">From the public npm registry, with install scripts disabled. The engineer never gets network access.</span></div>`);
+    }
+    if (ui.errors.install) out.push(`<p class="error-text">${esc(ui.errors.install)}</p>`);
   }
   if (def.verdict && ['FAIL', 'BLOCKED'].includes(st.status) && !state.activeRun) {
     const earlier = ui.data.workflow.stages.filter(
@@ -531,6 +549,8 @@ document.addEventListener('click', async (ev) => {
     await act(`check:${d.check}`, () => post(`/api/gates/${d.check}/check`));
   } else if (d.cancel) {
     await act('cancel', () => post(`/api/runs/${d.cancel}/cancel`));
+  } else if (d.install !== undefined) {
+    await act('install', () => post('/api/dependencies/install'));
   } else if (d.reopen) {
     const reason = ui.drafts.feedback[`reopen:${d.from}`] ?? '';
     if (!reason.trim()) {

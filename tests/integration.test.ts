@@ -26,8 +26,22 @@ function wrapper(flavor: string) {
   chmodSync(file, 0o755);
   return file;
 }
+// Fake npm: "installs" whatever package.json declares into node_modules.
+const FAKE_NPM = path.join(tmp, 'fake-npm');
+writeFileSync(FAKE_NPM, `#!/usr/bin/env node
+const fs = require('fs'), path = require('path');
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+for (const name of Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })) {
+  fs.mkdirSync(path.join('node_modules', name), { recursive: true });
+  fs.writeFileSync(path.join('node_modules', name, 'package.json'), JSON.stringify({ name }));
+}
+console.log('installed with args: ' + process.argv.slice(2).join(' '));
+`);
+chmodSync(FAKE_NPM, 0o755);
+
 const env = {
   ...process.env,
+  AISDLC_NPM_BIN: FAKE_NPM,
   PORT: String(PORT),
   AISDLC_WORKSPACES: WORKSPACES,
   AISDLC_CLAUDE_BIN: wrapper('claude'),
@@ -302,6 +316,33 @@ const passes = async (stage: string) => {
   const st = await run(stage);
   assert.equal(st.status, 'PASS', `${stage}: ${st.blockers.join('; ')}`);
 };
+
+test('packages from git, file or URL specs are refused', async () => {
+  modes({ codex: 'bad-dep' });
+  await run('implementation');
+  modes({});
+  const deps = (await get('/api/overview')).body.dependencies;
+  assert.ok(deps.refused.some((x: string) => x.startsWith('evil@git+https')));
+  const r = await post('/api/dependencies/install');
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /only registry packages/);
+});
+
+test('the engineer asks for a package and a human installs it, scripts disabled', async () => {
+  modes({ codex: 'needs-dep' });
+  const st = await run('implementation');
+  modes({});
+  assert.equal(st.status, 'FAIL');
+  assert.ok(st.blockers.some((b: string) => b.includes('Needs package install: left-pad')));
+  const deps = (await get('/api/overview')).body.dependencies;
+  assert.deepEqual(deps.missing.map((d: any) => d.name), ['left-pad']);
+  const r = await post('/api/dependencies/install');
+  assert.equal(r.status, 200, r.body.error);
+  assert.ok(existsSync(path.join(ws(), 'node_modules/left-pad/package.json')));
+  assert.match(readFileSync(path.join(ws(), '.gitignore'), 'utf8'), /^node_modules\/$/m);
+  assert.match(readFileSync(path.join(ws(), r.body.log), 'utf8'), /--ignore-scripts/);
+  assert.equal((await post('/api/dependencies/install')).status, 409, 'nothing left to install');
+});
 
 test('the engineer cannot change other roles\' files: changes are reverted and the run fails', async () => {
   const prd = readFileSync(path.join(ws(), 'product/prd.md'), 'utf8');

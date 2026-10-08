@@ -52,9 +52,13 @@ criteria and match the approved design.
 ## Environment
 
 - You run in a sandbox: you can write only inside this product folder, there is
-  **no network**, and `.git` is read-only. You cannot install packages, so use
-  only Node.js built-ins (for example `node:test`, `node:sqlite`, `node:http`)
-  unless a dependency is already present in `node_modules`.
+  **no network**, and `.git` is read-only. You cannot install packages yourself.
+- Prefer Node.js built-ins (for example `node:test`, `node:sqlite`, `node:http`).
+  If a package is really needed, add it to `package.json` with a plain registry
+  version range (no git, file or URL specs, no `.npmrc`), list it in `blockers`
+  as "Needs package install: <name>", and set `status` to `FAIL`. A human
+  installs it (with install scripts disabled) and runs you again; packages
+  already in `node_modules` are available to you.
 - After you finish, the Control Center runs `npm test` itself, in the same kind
   of sandbox. If it fails, your run fails, whatever you report.
 

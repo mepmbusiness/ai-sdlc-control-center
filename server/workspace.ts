@@ -141,3 +141,64 @@ export async function runTests(ws: string, onSpawn?: (kill: () => void) => void)
     });
   });
 }
+
+// ---------- dependency installs (human-confirmed, outside the agent) ----------
+
+export interface Dependency {
+  name: string;
+  range: string;
+  dev: boolean;
+}
+
+// Only plain registry packages: no git, file, link or URL specs, which could
+// point npm at arbitrary code.
+const NPM_NAME = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const REGISTRY_RANGE = /^[\w.^~<>=*| -]+$/;
+
+export async function dependencyStatus(ws: string): Promise<{ missing: Dependency[]; refused: string[] }> {
+  let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  try {
+    pkg = JSON.parse(await fs.readFile(path.join(ws, 'package.json'), 'utf8'));
+  } catch {
+    return { missing: [], refused: [] };
+  }
+  const missing: Dependency[] = [];
+  const refused: string[] = [];
+  if (existsSync(path.join(ws, '.npmrc'))) refused.push('.npmrc in the product folder (it could redirect npm to another registry)');
+  for (const [dev, deps] of [[false, pkg.dependencies], [true, pkg.devDependencies]] as const) {
+    for (const [name, range] of Object.entries(deps ?? {})) {
+      if (!NPM_NAME.test(name) || !REGISTRY_RANGE.test(range) || range.includes(':')) {
+        refused.push(`${name}@${range} (only registry packages with a version range are allowed)`);
+      } else if (!existsSync(path.join(ws, 'node_modules', name, 'package.json'))) {
+        missing.push({ name, range, dev });
+      }
+    }
+  }
+  return { missing, refused };
+}
+
+export const NPM_BIN = process.env.AISDLC_NPM_BIN || 'npm';
+
+// Installs exactly what package.json declares from the public npm registry,
+// with lifecycle scripts disabled so no package code runs during install.
+export async function installDependencies(ws: string): Promise<{ ok: boolean; output: string }> {
+  const gitignore = path.join(ws, '.gitignore');
+  const current = existsSync(gitignore) ? await fs.readFile(gitignore, 'utf8') : '';
+  if (!/^\/?node_modules\/?$/m.test(current)) await fs.writeFile(gitignore, `${current}${current && !current.endsWith('\n') ? '\n' : ''}node_modules/\n`);
+  return new Promise((resolve) => {
+    const child = spawn(
+      NPM_BIN,
+      ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'],
+      { cwd: ws, env: childEnv() },
+    );
+    let output = '';
+    const timer = setTimeout(() => child.kill('SIGTERM'), 5 * 60_000);
+    child.stdout.on('data', (d) => (output += d));
+    child.stderr.on('data', (d) => (output += d));
+    child.on('error', (e) => (output += `\n${e.message}`));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, output });
+    });
+  });
+}

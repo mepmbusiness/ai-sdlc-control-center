@@ -13,6 +13,7 @@ import {
   interruptActiveRun,
   reconcile,
   reopen,
+  environmentChanged,
   EngineError,
   type Workflow,
 } from '../server/engine.ts';
@@ -199,4 +200,18 @@ test('reopen sends work back to an earlier agent stage with the human reason', (
   assert.equal(s.currentStage, 'discovery');
   assert.equal(s.stages.discovery.status, 'READY');
   assert.deepEqual(s.stages.discovery.blockers, ['Reopened by a human: Missing a competitor']);
+});
+
+test('installing packages resets the engineer failure streak', () => {
+  let s = initialState(wf, { name: 'Demo', slug: 'demo' }, T);
+  s.stages.implementation.status = 'READY';
+  s.currentStage = 'implementation';
+  for (let i = 1; i <= wf.maxConsecutiveFailures; i++) {
+    s = startRun(s, wf, 'implementation', `i${i}`, T);
+    s = completeRun(s, wf, `i${i}`, { status: 'FAIL', summary: null, blockers: ['Needs package install: x'] }, T);
+  }
+  assert.equal(s.stages.implementation.status, 'BLOCKED');
+  s = environmentChanged(s, wf, T);
+  assert.equal(s.stages.implementation.status, 'READY');
+  assert.equal(s.stages.implementation.consecutiveFailures, 0);
 });
